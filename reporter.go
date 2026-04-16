@@ -22,6 +22,7 @@ var asciiBanner = `
 func printBanner() {
 	fmt.Println(cyan(asciiBanner))
 	fmt.Println(dim("  AI Infrastructure Mapper v1.0"))
+	fmt.Println(dim("  by NuClide"))
 }
 
 // ── Phase headers ───────────────────────────────────────────────────
