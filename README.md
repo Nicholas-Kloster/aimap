@@ -1,6 +1,8 @@
 # aimap
 
-Purpose-built scanner for discovering and enumerating exposed AI/LLM infrastructure. Single binary, zero external dependencies (Go stdlib only).
+**nmap for AI infrastructure.** Finds every exposed LLM, vector database, and AI model server on a network and tells you exactly what's running, what's unprotected, and what data is inside.
+
+Single binary, zero external dependencies (Go stdlib only).
 
 ## Features
 
