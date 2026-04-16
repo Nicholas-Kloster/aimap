@@ -10,7 +10,7 @@ url='https://github.com/Nicholas-Kloster/aimap'
 license=('MIT')
 makedepends=('go')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/Nicholas-Kloster/aimap/archive/v$pkgver.tar.gz")
-sha256sums=('SKIP')  # Replace with actual sha256 after creating the release tag
+sha256sums=('c1a48b61524f1f3d4c5e046c1a84189db36e55bce1900ede1107cfbabbb1246c')
 
 build() {
   cd "$pkgname-$pkgver"
