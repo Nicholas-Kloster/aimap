@@ -1,2 +1,3 @@
 aimap
 *.json
+dist/
