@@ -224,6 +224,108 @@ var Fingerprints = []Fingerprint{
 		},
 		Severity: "high",
 	},
+
+	// ── Additions v1.1 ──────────────────────────────────────────
+	{
+		Name:         "Milvus",
+		DefaultPorts: []int{9091, 19530},
+		Probes: []Probe{
+			{Path: "/api/v1/health", Matches: []MatchCond{
+				{Type: "body_contains", Value: "is_healthy"},
+			}},
+			{Path: "/healthz", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "OK"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "Langfuse",
+		DefaultPorts: []int{3000},
+		Probes: []Probe{
+			{Path: "/api/public/health", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "status"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "body_contains", Value: "langfuse"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "Dify",
+		DefaultPorts: []int{80, 5001, 3000},
+		Probes: []Probe{
+			{Path: "/console/api/setup", Matches: []MatchCond{
+				{Type: "body_contains", Value: "dify"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "body_contains", Value: "Dify"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "BentoML",
+		DefaultPorts: []int{3000},
+		Probes: []Probe{
+			{Path: "/healthz", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+			}},
+			{Path: "/docs.json", Matches: []MatchCond{
+				{Type: "body_contains", Value: "bentoml"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "body_contains", Value: "BentoML"},
+			}},
+		},
+		Severity: "medium",
+	},
+	{
+		Name:         "Ray Dashboard",
+		DefaultPorts: []int{8265},
+		Probes: []Probe{
+			{Path: "/api/version", Matches: []MatchCond{
+				{Type: "json_field", Field: "ray_version"},
+			}},
+			{Path: "/api/cluster_status", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "Kubeflow",
+		DefaultPorts: []int{8080},
+		Probes: []Probe{
+			{Path: "/pipeline/apis/v1beta1/healthz", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "body_contains", Value: "Kubeflow"},
+			}},
+		},
+		Severity: "high",
+	},
+
+	// ── Adjacent (non-AI, noted for defender handoff) ───────────
+	// Docker Registry is not an AI service, but often co-deployed with
+	// AI stacks. Defender should hand off to nuclide-registry-recon.
+	{
+		Name:         "Docker Registry",
+		DefaultPorts: []int{5000, 51000, 55000},
+		Probes: []Probe{
+			{Path: "/v2/", Matches: []MatchCond{
+				{Type: "header_contains", Field: "Docker-Distribution-Api-Version", Value: "registry/2.0"},
+			}},
+			{Path: "/v2/_catalog", Matches: []MatchCond{
+				{Type: "json_field", Field: "repositories"},
+			}},
+		},
+		Severity: "low",
+	},
 }
 
 // ── Matching engine ─────────────────────────────────────────────────

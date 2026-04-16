@@ -109,6 +109,14 @@ func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool
 			result = enumJupyter(client, svc)
 		case "MLflow":
 			result = enumMLflow(client, svc)
+		case "Milvus":
+			result = enumMilvus(client, svc)
+		case "Langfuse":
+			result = enumLangfuse(client, svc)
+		case "Dify":
+			result = enumDify(client, svc)
+		case "Docker Registry":
+			result = enumDockerRegistry(client, svc)
 		default:
 			result = mkResult(svc)
 		}
@@ -553,6 +561,249 @@ func enumMLflow(c *http.Client, svc ServiceMatch) EnumResult {
 				Severity: "high",
 			})
 		}
+	}
+
+	return r
+}
+
+// ── Milvus ──────────────────────────────────────────────────────────
+
+func enumMilvus(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "none"
+
+	// Version / build info
+	if st, _, body, err := httpGET(c, b+"/api/v1/version"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.Version = jStr(m, "version")
+			r.RawData["version_info"] = m
+		}
+	}
+
+	// Health
+	if st, _, body, err := httpGET(c, b+"/api/v1/health"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["health"] = m
+		}
+	}
+
+	// Prometheus metrics (often exposes internal cluster info)
+	if st, _, body, err := httpGET(c, b+"/metrics"); err == nil && st == 200 {
+		if strings.Contains(string(body), "milvus_") {
+			r.Findings = append(r.Findings, Finding{
+				Category: "metrics", Title: "Prometheus metrics endpoint accessible",
+				Detail:   "/metrics exposes internal cluster telemetry and deployment topology",
+				Severity: "medium",
+			})
+		}
+	}
+
+	// Collection enumeration via REST gateway
+	if st, _, body, err := httpGET(c, b+"/api/v1/collections"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			cols := jArray(m, "collection_names")
+			if cols == nil {
+				// Alternative response shape
+				if data := jMap(m, "data"); data != nil {
+					cols = jArray(data, "collection_names")
+				}
+			}
+			var piiNames []string
+			r.Details = append(r.Details, fmt.Sprintf("Collections: %d", len(cols)))
+			for _, c := range cols {
+				if name, ok := c.(string); ok {
+					r.Details = append(r.Details, fmt.Sprintf("  %s", name))
+					if isPII(name) {
+						piiNames = append(piiNames, name)
+					}
+				}
+			}
+			r.RawData["collections"] = cols
+
+			if len(cols) > 0 {
+				r.Findings = append(r.Findings, Finding{
+					Category: "data", Title: fmt.Sprintf("%d collections enumerable without auth", len(cols)),
+					Severity: "high",
+				})
+			}
+			if len(piiNames) > 0 {
+				r.Findings = append(r.Findings, Finding{
+					Category: "pii", Title: "PII-indicating collection names: " + strings.Join(piiNames, ", "),
+					Severity: "high",
+				})
+			}
+		}
+	}
+
+	return r
+}
+
+// ── Langfuse ────────────────────────────────────────────────────────
+
+func enumLangfuse(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "unknown"
+
+	// Health / status
+	if st, _, body, err := httpGET(c, b+"/api/public/health"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.Version = jStr(m, "version")
+			r.RawData["health"] = m
+		}
+	}
+
+	// Langfuse is the LLM observability platform. If it's exposed, the real
+	// concern is NOT the UI but the trace/span data which contains full
+	// prompt+response history. Even signup-open without auth is a finding
+	// because anyone can create an account and read existing org data in
+	// misconfigured deployments.
+
+	// Check for open signup (CRITICAL misconfig in self-hosted deployments)
+	if st, _, body, err := httpGET(c, b+"/api/auth/providers"); err == nil && st == 200 {
+		bodyStr := string(body)
+		if strings.Contains(bodyStr, "credentials") || strings.Contains(bodyStr, "email") {
+			r.Findings = append(r.Findings, Finding{
+				Category: "access", Title: "Authentication endpoint enumerable",
+				Detail:   "Sign-in providers readable; if signup is open, attackers can self-register and access org data",
+				Severity: "medium",
+			})
+		}
+	}
+
+	// Langfuse exposes /api/public/projects etc. Without auth these return
+	// 401 when properly configured.
+	if st, _, body, err := httpGET(c, b+"/api/public/projects"); err == nil {
+		if st == 200 {
+			r.AuthStatus = "none"
+			r.Findings = append(r.Findings, Finding{
+				Category: "data", Title: "LLM trace data accessible without authentication",
+				Detail:   "Langfuse stores full prompt/response history, system prompts, user inputs, and tool-call outputs. Unauthenticated access likely exposes production conversation data.",
+				Severity: "critical",
+			})
+			if arr, err := parseJSONArray(body); err == nil {
+				r.RawData["project_count"] = len(arr)
+				r.Details = append(r.Details, fmt.Sprintf("Projects: %d", len(arr)))
+			}
+		} else if st == 401 || st == 403 {
+			r.AuthStatus = fmt.Sprintf("required (HTTP %d)", st)
+			r.Findings = append(r.Findings, Finding{
+				Category: "info", Title: "Authentication enforced on trace API",
+				Severity: "info",
+			})
+		}
+	}
+
+	// Always flag the severity of what Langfuse contains, even when auth is on
+	r.Findings = append(r.Findings, Finding{
+		Category: "context", Title: "Langfuse stores LLM conversation data",
+		Detail:   "This service contains full prompt/response history. Misconfigurations here leak production conversation data and potentially PII, credentials in tool-call outputs, or system prompts.",
+		Severity: "info",
+	})
+
+	return r
+}
+
+// ── Dify ────────────────────────────────────────────────────────────
+
+func enumDify(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "unknown"
+
+	// Dify exposes /console/api/setup — returns a JSON response indicating
+	// whether initial admin setup has been completed. A fresh Dify instance
+	// where setup has NOT been completed is a critical finding: anyone can
+	// claim the admin account.
+	if st, _, body, err := httpGET(c, b+"/console/api/setup"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			setupDone := false
+			if v, ok := m["step"]; ok {
+				if s, ok := v.(string); ok && s == "finished" {
+					setupDone = true
+				}
+			}
+			r.RawData["setup"] = m
+			if !setupDone {
+				r.Findings = append(r.Findings, Finding{
+					Category: "access", Title: "Dify initial setup NOT completed — admin claimable",
+					Detail:   "Anyone reaching /install can register the first admin account. Claim immediately or firewall.",
+					Severity: "critical",
+				})
+				r.AuthStatus = "none (admin claimable)"
+			} else {
+				r.AuthStatus = "setup completed"
+			}
+		}
+	}
+
+	// Version / info endpoints
+	if st, _, body, err := httpGET(c, b+"/console/api/version"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.Version = jStr(m, "version")
+		}
+	}
+
+	// App enumeration (usually requires auth, but some older Dify versions
+	// exposed these endpoints without)
+	if st, _, body, err := httpGET(c, b+"/console/api/apps"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			if data := jArray(m, "data"); data != nil {
+				r.Findings = append(r.Findings, Finding{
+					Category: "data", Title: fmt.Sprintf("%d Dify apps enumerable", len(data)),
+					Severity: "high",
+				})
+			}
+		}
+	}
+
+	return r
+}
+
+// ── Docker Registry (handoff only — not an AI service) ─────────────
+
+func enumDockerRegistry(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "unknown"
+
+	// This is a non-AI adjacent service. aimap does not triage Docker
+	// Registries in depth; that is nuclide-registry-recon's scope.
+	// We note presence and key posture only.
+
+	if st, hdrs, _, err := httpGET(c, b+"/v2/"); err == nil {
+		if st == 200 {
+			r.AuthStatus = "none"
+		} else if st == 401 {
+			if wa, ok := hdrs["Www-Authenticate"]; ok {
+				r.AuthStatus = "required: " + wa
+			} else {
+				r.AuthStatus = "required (HTTP 401)"
+			}
+		}
+	}
+
+	// Catalog access check (read-only)
+	if st, _, body, err := httpGET(c, b+"/v2/_catalog"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			repos := jArray(m, "repositories")
+			r.RawData["repo_count"] = len(repos)
+			r.Details = append(r.Details, fmt.Sprintf("Anonymous /v2/_catalog accessible — %d repositories", len(repos)))
+			if len(repos) > 0 {
+				r.Findings = append(r.Findings, Finding{
+					Category: "adjacent", Title: fmt.Sprintf("Docker Registry — %d repos anonymously enumerable", len(repos)),
+					Detail:   "Adjacent to AI services. Use nuclide-registry-recon or scripts/registry_triage.py for full triage.",
+					Severity: "medium",
+				})
+			}
+		}
+	} else {
+		r.Findings = append(r.Findings, Finding{
+			Category: "adjacent", Title: "Docker Registry detected",
+			Detail:   "Adjacent to AI services. Not fully triaged by aimap. Use nuclide-registry-recon for depth.",
+			Severity: "low",
+		})
 	}
 
 	return r
