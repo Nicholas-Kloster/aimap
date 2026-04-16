@@ -14,14 +14,19 @@ import (
 // ── ANSI ────────────────────────────────────────────────────────────
 
 const (
-	cReset  = "\033[0m"
-	cRed    = "\033[91m"
-	cGreen  = "\033[92m"
-	cYellow = "\033[93m"
-	cBlue   = "\033[94m"
-	cCyan   = "\033[96m"
-	cBold   = "\033[1m"
-	cDim    = "\033[2m"
+	cReset    = "\033[0m"
+	cRed      = "\033[91m"
+	cGreen    = "\033[92m"
+	cYellow   = "\033[93m"
+	cBlue     = "\033[94m"
+	cCyan     = "\033[96m"
+	cWhite    = "\033[97m"
+	cBold     = "\033[1m"
+	cDim      = "\033[2m"
+	cRedBg    = "\033[41m"
+	cYellowBg = "\033[43m"
+	cBlueBg   = "\033[44m"
+	cGrayBg   = "\033[100m"
 )
 
 func red(s string) string    { return cRed + s + cReset }
@@ -32,19 +37,42 @@ func cyan(s string) string   { return cCyan + s + cReset }
 func bold(s string) string   { return cBold + s + cReset }
 func dim(s string) string    { return cDim + s + cReset }
 
-func sevColor(sev string) string {
+func sevIcon(sev string) string {
 	switch sev {
 	case "critical":
-		return cRed + cBold + "CRITICAL" + cReset
+		return cRed + cBold + "✗✗" + cReset
 	case "high":
-		return cRed + "HIGH" + cReset
+		return cRed + "✗ " + cReset
 	case "medium":
-		return cYellow + "MEDIUM" + cReset
+		return cYellow + "△ " + cReset
 	case "low":
-		return cBlue + "LOW" + cReset
+		return cBlue + "○ " + cReset
 	default:
-		return cDim + "INFO" + cReset
+		return cDim + "· " + cReset
 	}
+}
+
+func riskBadge(risk string) string {
+	switch risk {
+	case "critical":
+		return cWhite + cRedBg + " CRIT " + cReset
+	case "high":
+		return cWhite + cRedBg + " HIGH " + cReset
+	case "medium":
+		return "\033[30m" + cYellowBg + " MED  " + cReset
+	case "low":
+		return cWhite + cBlueBg + " LOW  " + cReset
+	default:
+		return cWhite + cGrayBg + " INFO " + cReset
+	}
+}
+
+func colorPad(text, color string, width int) string {
+	pad := width - len(text)
+	if pad < 0 {
+		pad = 0
+	}
+	return color + text + cReset + strings.Repeat(" ", pad)
 }
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -93,6 +121,7 @@ type EnumResult struct {
 	Version    string                 `json:"version,omitempty"`
 	AuthStatus string                 `json:"auth_status"`
 	RiskLevel  string                 `json:"risk_level"`
+	Details    []string               `json:"details,omitempty"`
 	Findings   []Finding              `json:"findings"`
 	RawData    map[string]interface{} `json:"raw_data,omitempty"`
 }
@@ -110,14 +139,17 @@ type ScanReport struct {
 }
 
 type Summary struct {
-	TotalTargets  int `json:"total_targets"`
-	OpenPorts     int `json:"open_ports"`
-	ServicesFound int `json:"services_found"`
-	Critical      int `json:"critical"`
-	High          int `json:"high"`
-	Medium        int `json:"medium"`
-	Low           int `json:"low"`
-	Info          int `json:"info"`
+	TotalTargets  int    `json:"total_targets"`
+	OpenPorts     int    `json:"open_ports"`
+	ServicesFound int    `json:"services_found"`
+	Unauthed      int    `json:"unauthenticated"`
+	TotalFindings int    `json:"total_findings"`
+	Critical      int    `json:"critical"`
+	High          int    `json:"high"`
+	Medium        int    `json:"medium"`
+	Low           int    `json:"low"`
+	Info          int    `json:"info"`
+	Duration      string `json:"scan_duration"`
 }
 
 // ── HTTP ────────────────────────────────────────────────────────────
@@ -146,13 +178,11 @@ func httpGET(c *http.Client, url string) (int, map[string]string, []byte, error)
 	}
 	req.Header.Set("User-Agent", "aimap/1.0 (security-research)")
 	req.Header.Set("Accept", "application/json, text/html, */*")
-
 	resp, err := c.Do(req)
 	if err != nil {
 		return 0, nil, nil, err
 	}
 	defer resp.Body.Close()
-
 	hdrs := make(map[string]string)
 	for k, v := range resp.Header {
 		hdrs[k] = strings.Join(v, ", ")
@@ -161,7 +191,7 @@ func httpGET(c *http.Client, url string) (int, map[string]string, []byte, error)
 	return resp.StatusCode, hdrs, body, nil
 }
 
-// ── JSON helpers ────────────────────────────────────────────────────
+// ── JSON ────────────────────────────────────────────────────────────
 
 func parseJSON(data []byte) (map[string]interface{}, error) {
 	var m map[string]interface{}
@@ -183,10 +213,7 @@ func jStr(m map[string]interface{}, key string) string {
 	return ""
 }
 
-func jHas(m map[string]interface{}, key string) bool {
-	_, ok := m[key]
-	return ok
-}
+func jHas(m map[string]interface{}, key string) bool { _, ok := m[key]; return ok }
 
 func jMap(m map[string]interface{}, key string) map[string]interface{} {
 	if v, ok := m[key]; ok {
@@ -215,7 +242,7 @@ func jFloat(m map[string]interface{}, key string) float64 {
 	return 0
 }
 
-// ── IP / target parsing ────────────────────────────────────────────
+// ── IP / target parsing ─────────────────────────────────────────────
 
 func parseTargets(input string) []string {
 	input = strings.TrimSpace(input)
@@ -249,12 +276,39 @@ func incIP(ip net.IP) {
 	}
 }
 
-// ── Worker pool ─────────────────────────────────────────────────────
+// ── Formatting ──────────────────────────────────────────────────────
 
-type WorkerPool struct {
-	sem chan struct{}
+func fmtNum(n int) string {
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		return s
+	}
+	var b strings.Builder
+	rem := len(s) % 3
+	if rem > 0 {
+		b.WriteString(s[:rem])
+	}
+	for i := rem; i < len(s); i += 3 {
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(s[i : i+3])
+	}
+	return b.String()
 }
 
-func newPool(n int) *WorkerPool         { return &WorkerPool{sem: make(chan struct{}, n)} }
-func (p *WorkerPool) Acquire()          { p.sem <- struct{}{} }
-func (p *WorkerPool) Release()          { <-p.sem }
+func truncStr(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "~"
+}
+
+// ── Worker pool ─────────────────────────────────────────────────────
+
+type WorkerPool struct{ sem chan struct{} }
+
+func newPool(n int) *WorkerPool    { return &WorkerPool{sem: make(chan struct{}, n)} }
+func (p *WorkerPool) Acquire()     { p.sem <- struct{}{} }
+func (p *WorkerPool) Release()     { <-p.sem }

@@ -23,6 +23,7 @@ var piiPatterns = []string{
 	"medical", "health", "diagnosis", "disability",
 	"parent", "guardian", "emergency_contact", "family",
 	"gpa", "score", "evaluation", "discipline",
+	"customer", "employee", "user",
 }
 
 func isPII(field string) bool {
@@ -35,6 +36,53 @@ func isPII(field string) bool {
 	return false
 }
 
+// ── Secret patterns ─────────────────────────────────────────────────
+
+var secretPatterns = []struct {
+	Pattern string
+	Name    string
+}{
+	{"OPENAI_API_KEY", "OpenAI API key in filesystem"},
+	{"ANTHROPIC_API_KEY", "Anthropic API key in filesystem"},
+	{"AWS_ACCESS_KEY_ID", "AWS credentials exposed"},
+	{"AWS_SECRET_ACCESS_KEY", "AWS secret key exposed"},
+	{"GOOGLE_API_KEY", "Google API key in filesystem"},
+	{"AZURE_OPENAI_KEY", "Azure OpenAI key in filesystem"},
+	{"HF_TOKEN", "HuggingFace token in filesystem"},
+	{"HUGGING_FACE", "HuggingFace credential in filesystem"},
+	{"DATABASE_URL", "Database connection string exposed"},
+	{"POSTGRES_PASSWORD", "PostgreSQL password exposed"},
+	{"MYSQL_PASSWORD", "MySQL password exposed"},
+	{"REDIS_PASSWORD", "Redis password exposed"},
+	{"sk-proj-", "OpenAI project key pattern"},
+	{"sk-ant-", "Anthropic key pattern"},
+	{"AKIA", "AWS access key ID pattern"},
+	{"ghp_", "GitHub PAT pattern"},
+	{"glpat-", "GitLab PAT pattern"},
+	{"xoxb-", "Slack bot token pattern"},
+}
+
+func scanSecrets(content string, r *EnumResult) {
+	for _, sp := range secretPatterns {
+		if strings.Contains(content, sp.Pattern) {
+			idx := strings.Index(content, sp.Pattern)
+			snippet := content[idx:]
+			if nl := strings.IndexByte(snippet, '\n'); nl > 0 {
+				snippet = snippet[:nl]
+			}
+			if len(snippet) > 50 {
+				snippet = snippet[:47] + "..."
+			}
+			r.Findings = append(r.Findings, Finding{
+				Category: "credentials",
+				Title:    sp.Name,
+				Detail:   snippet,
+				Severity: "critical",
+			})
+		}
+	}
+}
+
 // ── Dispatcher ──────────────────────────────────────────────────────
 
 func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool) []EnumResult {
@@ -45,7 +93,6 @@ func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool
 		if verbose {
 			fmt.Printf("    enumerating %s @ %s\n", svc.Service, svc.BaseURL)
 		}
-
 		var result EnumResult
 		switch svc.Service {
 		case "Weaviate":
@@ -65,8 +112,6 @@ func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool
 		default:
 			result = mkResult(svc)
 		}
-
-		// Append generic checks for all services
 		result.Findings = append(result.Findings, checkGeneric(client, svc)...)
 		result.RiskLevel = computeRisk(result)
 		results = append(results, result)
@@ -92,45 +137,28 @@ func enumWeaviate(c *http.Client, svc ServiceMatch) EnumResult {
 	r := mkResult(svc)
 	b := svc.BaseURL
 
-	// Meta
 	if st, _, body, err := httpGET(c, b+"/v1/meta"); err == nil && st == 200 {
 		if m, err := parseJSON(body); err == nil {
 			r.Version = jStr(m, "version")
 			r.RawData["meta"] = m
-			r.Findings = append(r.Findings, Finding{
-				Category: "info", Title: "Version and metadata disclosed",
-				Detail:   fmt.Sprintf("Weaviate %s, hostname: %s", jStr(m, "version"), jStr(m, "hostname")),
-				Severity: "medium",
-			})
 			if mods := jMap(m, "modules"); mods != nil {
 				names := make([]string, 0, len(mods))
 				for k := range mods {
 					names = append(names, k)
 				}
 				r.RawData["modules"] = names
-				if len(names) > 0 {
-					r.Findings = append(r.Findings, Finding{
-						Category: "info", Title: "Modules exposed",
-						Detail:   strings.Join(names, ", "),
-						Severity: "low",
-					})
-				}
 			}
 		}
 	}
 
-	// Auth check
 	r.AuthStatus = "none"
 	if st, _, _, err := httpGET(c, b+"/.well-known/openid-configuration"); err == nil && st == 200 {
-		r.AuthStatus = "OIDC configured"
+		r.AuthStatus = "OIDC"
 	}
 
-	// Schema
 	if st, _, body, err := httpGET(c, b+"/v1/schema"); err == nil && st == 200 {
 		if m, err := parseJSON(body); err == nil {
 			classes := jArray(m, "classes")
-			r.RawData["collection_count"] = len(classes)
-
 			type colInfo struct {
 				Name       string   `json:"name"`
 				Vectorizer string   `json:"vectorizer"`
@@ -140,7 +168,9 @@ func enumWeaviate(c *http.Client, svc ServiceMatch) EnumResult {
 			}
 			var cols []colInfo
 			var allPII []string
+			totalObjects := 0
 
+			r.Details = append(r.Details, fmt.Sprintf("Collections: %d", len(classes)))
 			for _, cls := range classes {
 				cm, ok := cls.(map[string]interface{})
 				if !ok {
@@ -152,7 +182,6 @@ func enumWeaviate(c *http.Client, svc ServiceMatch) EnumResult {
 				}
 				props := jArray(cm, "properties")
 				ci.Props = len(props)
-
 				for _, p := range props {
 					pm, ok := p.(map[string]interface{})
 					if !ok {
@@ -160,46 +189,45 @@ func enumWeaviate(c *http.Client, svc ServiceMatch) EnumResult {
 					}
 					if pName := jStr(pm, "name"); isPII(pName) {
 						ci.PII = append(ci.PII, pName)
-						allPII = append(allPII, ci.Name+"."+pName)
+						allPII = append(allPII, pName)
 					}
 				}
-
-				// Object count
 				url := fmt.Sprintf("%s/v1/objects?class=%s&limit=1", b, ci.Name)
 				if s, _, ob, e := httpGET(c, url); e == nil && s == 200 {
 					if om, e := parseJSON(ob); e == nil {
 						ci.Objects = int(jFloat(om, "totalResults"))
 					}
 				}
+				totalObjects += ci.Objects
+				r.Details = append(r.Details, fmt.Sprintf("  %-30s (%s objects)", ci.Name, fmtNum(ci.Objects)))
 				cols = append(cols, ci)
 			}
 			r.RawData["collections"] = cols
 
-			r.Findings = append(r.Findings, Finding{
-				Category: "schema", Title: "Full schema readable",
-				Detail:   fmt.Sprintf("%d collections enumerated", len(cols)),
-				Severity: "high", Data: cols,
-			})
 			if len(allPII) > 0 {
 				r.Findings = append(r.Findings, Finding{
-					Category: "pii", Title: "PII-like field names detected",
-					Detail:   strings.Join(allPII, ", "),
-					Severity: "high", Data: allPII,
+					Category: "pii", Title: "PII fields: " + strings.Join(allPII, ", "),
+					Severity: "critical", Data: allPII,
+				})
+			}
+			if totalObjects > 0 {
+				r.Findings = append(r.Findings, Finding{
+					Category: "data", Title: fmt.Sprintf("%s total objects — full read access", fmtNum(totalObjects)),
+					Severity: "high",
+				})
+			} else {
+				r.Findings = append(r.Findings, Finding{
+					Category: "schema", Title: "Full schema readable (collections empty)",
+					Severity: "high",
 				})
 			}
 		}
 	}
 
-	// Nodes
 	if st, _, body, err := httpGET(c, b+"/v1/nodes"); err == nil && st == 200 {
 		if m, err := parseJSON(body); err == nil {
 			nodes := jArray(m, "nodes")
 			r.RawData["node_count"] = len(nodes)
-			r.Findings = append(r.Findings, Finding{
-				Category: "cluster", Title: "Cluster topology exposed",
-				Detail:   fmt.Sprintf("%d node(s)", len(nodes)),
-				Severity: "medium",
-			})
 		}
 	}
 
@@ -213,14 +241,12 @@ func enumOllama(c *http.Client, svc ServiceMatch) EnumResult {
 	b := svc.BaseURL
 	r.AuthStatus = "none"
 
-	// Version
 	if st, _, body, err := httpGET(c, b+"/api/version"); err == nil && st == 200 {
 		if m, err := parseJSON(body); err == nil {
 			r.Version = jStr(m, "version")
 		}
 	}
 
-	// Models
 	if st, _, body, err := httpGET(c, b+"/api/tags"); err == nil && st == 200 {
 		if m, err := parseJSON(body); err == nil {
 			models := jArray(m, "models")
@@ -229,6 +255,7 @@ func enumOllama(c *http.Client, svc ServiceMatch) EnumResult {
 				Size string `json:"size"`
 			}
 			var mlist []modelInfo
+			var parts []string
 			for _, mdl := range models {
 				mm, ok := mdl.(map[string]interface{})
 				if !ok {
@@ -236,33 +263,34 @@ func enumOllama(c *http.Client, svc ServiceMatch) EnumResult {
 				}
 				mi := modelInfo{Name: jStr(mm, "name")}
 				if sz := jFloat(mm, "size"); sz > 0 {
-					mi.Size = fmt.Sprintf("%.1f GB", sz/1e9)
+					mi.Size = fmt.Sprintf("%.1fGB", sz/1e9)
 				}
 				mlist = append(mlist, mi)
+				parts = append(parts, fmt.Sprintf("%s (%s)", mi.Name, mi.Size))
 			}
 			r.RawData["models"] = mlist
+			if len(parts) > 0 {
+				r.Details = append(r.Details, "Models: "+strings.Join(parts, ", "))
+			}
 			r.Findings = append(r.Findings, Finding{
-				Category: "models", Title: "Model inventory accessible",
-				Detail:   fmt.Sprintf("%d models loaded", len(mlist)),
-				Severity: "high", Data: mlist,
+				Category: "models", Title: fmt.Sprintf("%d models loaded", len(mlist)),
+				Severity: "high",
 			})
 		}
 	}
 
-	// Generation endpoint
 	if st, _, _, err := httpGET(c, b+"/api/generate"); err == nil && st != 404 {
 		r.Findings = append(r.Findings, Finding{
-			Category: "access", Title: "Generation endpoint reachable",
-			Detail:   fmt.Sprintf("GET /api/generate returned HTTP %d — unauthenticated inference likely possible", st),
+			Category: "access", Title: "/api/generate open — anyone can run inference",
+			Detail:   fmt.Sprintf("HTTP %d", st),
 			Severity: "critical",
 		})
 	}
 
-	// Pull endpoint
 	if st, _, _, err := httpGET(c, b+"/api/pull"); err == nil && st != 404 {
 		r.Findings = append(r.Findings, Finding{
-			Category: "access", Title: "Model pull endpoint reachable",
-			Detail:   fmt.Sprintf("GET /api/pull returned HTTP %d — arbitrary model download may be possible", st),
+			Category: "access", Title: "/api/pull open — anyone can download new models",
+			Detail:   fmt.Sprintf("HTTP %d", st),
 			Severity: "critical",
 		})
 	}
@@ -277,20 +305,22 @@ func enumChromaDB(c *http.Client, svc ServiceMatch) EnumResult {
 	b := svc.BaseURL
 	r.AuthStatus = "none"
 
-	// Version
 	if st, _, body, err := httpGET(c, b+"/api/v1/version"); err == nil && st == 200 {
 		r.Version = strings.Trim(string(body), "\" \n\r")
 	}
 
-	// Collections
 	if st, _, body, err := httpGET(c, b+"/api/v1/collections"); err == nil && st == 200 {
 		if arr, err := parseJSONArray(body); err == nil {
 			type colInfo struct {
 				Name  string `json:"name"`
 				ID    string `json:"id"`
-				Count int    `json:"count,omitempty"`
+				Count int    `json:"count"`
 			}
 			var cols []colInfo
+			totalObjects := 0
+			var piiNames []string
+
+			r.Details = append(r.Details, fmt.Sprintf("Collections: %d", len(arr)))
 			for _, item := range arr {
 				if cm, ok := item.(map[string]interface{}); ok {
 					ci := colInfo{Name: jStr(cm, "name"), ID: jStr(cm, "id")}
@@ -303,24 +333,29 @@ func enumChromaDB(c *http.Client, svc ServiceMatch) EnumResult {
 							}
 						}
 					}
+					totalObjects += ci.Count
+					if isPII(ci.Name) {
+						piiNames = append(piiNames, ci.Name)
+					}
+					r.Details = append(r.Details, fmt.Sprintf("  %-30s (%s objects)", ci.Name, fmtNum(ci.Count)))
 					cols = append(cols, ci)
 				}
 			}
 			r.RawData["collections"] = cols
-			r.Findings = append(r.Findings, Finding{
-				Category: "schema", Title: "Collections enumerated",
-				Detail:   fmt.Sprintf("%d collections accessible", len(cols)),
-				Severity: "high", Data: cols,
-			})
-		}
-	}
 
-	// Tenant
-	if st, _, _, err := httpGET(c, b+"/api/v1/tenants/default_tenant"); err == nil && st == 200 {
-		r.Findings = append(r.Findings, Finding{
-			Category: "info", Title: "Tenant info accessible",
-			Severity: "medium",
-		})
+			if len(piiNames) > 0 {
+				r.Findings = append(r.Findings, Finding{
+					Category: "pii", Title: "PII-indicating collection names: " + strings.Join(piiNames, ", "),
+					Severity: "high",
+				})
+			}
+			if totalObjects > 0 {
+				r.Findings = append(r.Findings, Finding{
+					Category: "data", Title: fmt.Sprintf("%s total objects — full read access", fmtNum(totalObjects)),
+					Severity: "high",
+				})
+			}
+		}
 	}
 
 	return r
@@ -344,6 +379,7 @@ func enumQdrant(c *http.Client, svc ServiceMatch) EnumResult {
 					Status string `json:"status"`
 				}
 				var details []colDetail
+				r.Details = append(r.Details, fmt.Sprintf("Collections: %d", len(cols)))
 				for _, col := range cols {
 					cm, ok := col.(map[string]interface{})
 					if !ok {
@@ -359,26 +395,22 @@ func enumQdrant(c *http.Client, svc ServiceMatch) EnumResult {
 							}
 						}
 					}
+					r.Details = append(r.Details, fmt.Sprintf("  %-30s (%s points)", cd.Name, fmtNum(cd.Points)))
 					details = append(details, cd)
 				}
 				r.RawData["collections"] = details
 				r.Findings = append(r.Findings, Finding{
 					Category: "schema", Title: "Collections enumerated",
-					Detail:   fmt.Sprintf("%d collections", len(details)),
-					Severity: "high", Data: details,
+					Detail:   fmt.Sprintf("%d collections accessible", len(details)),
+					Severity: "high",
 				})
 			}
 		}
 	}
 
-	// Cluster
 	if st, _, body, err := httpGET(c, b+"/cluster"); err == nil && st == 200 {
 		if m, err := parseJSON(body); err == nil {
 			r.RawData["cluster"] = m
-			r.Findings = append(r.Findings, Finding{
-				Category: "cluster", Title: "Cluster topology exposed",
-				Severity: "medium",
-			})
 		}
 	}
 
@@ -394,10 +426,9 @@ func enumFlowise(c *http.Client, svc ServiceMatch) EnumResult {
 
 	if st, _, body, err := httpGET(c, b+"/api/v1/flows"); err == nil && st == 200 {
 		if arr, err := parseJSONArray(body); err == nil {
-			r.RawData["flow_count"] = len(arr)
+			r.Details = append(r.Details, fmt.Sprintf("Flows: %d", len(arr)))
 			r.Findings = append(r.Findings, Finding{
-				Category: "flows", Title: "Flows accessible",
-				Detail:   fmt.Sprintf("%d flows readable", len(arr)),
+				Category: "flows", Title: fmt.Sprintf("%d flows readable", len(arr)),
 				Severity: "high",
 			})
 		}
@@ -407,21 +438,14 @@ func enumFlowise(c *http.Client, svc ServiceMatch) EnumResult {
 
 	if st, _, body, err := httpGET(c, b+"/api/v1/chatflows"); err == nil && st == 200 {
 		if arr, err := parseJSONArray(body); err == nil {
-			r.RawData["chatflow_count"] = len(arr)
-			r.Findings = append(r.Findings, Finding{
-				Category: "flows", Title: "Chatflows accessible",
-				Detail:   fmt.Sprintf("%d chatflows", len(arr)),
-				Severity: "high",
-			})
+			r.Details = append(r.Details, fmt.Sprintf("Chatflows: %d", len(arr)))
 		}
 	}
 
-	// Credentials — critical
 	if st, _, body, err := httpGET(c, b+"/api/v1/credentials"); err == nil && st == 200 {
 		if arr, err := parseJSONArray(body); err == nil {
 			r.Findings = append(r.Findings, Finding{
-				Category: "credentials", Title: "Credentials endpoint accessible",
-				Detail:   fmt.Sprintf("%d credential entries readable", len(arr)),
+				Category: "credentials", Title: fmt.Sprintf("Credentials endpoint accessible — %d entries", len(arr)),
 				Severity: "critical",
 			})
 		}
@@ -437,13 +461,14 @@ func enumJupyter(c *http.Client, svc ServiceMatch) EnumResult {
 	b := svc.BaseURL
 	r.AuthStatus = "unknown"
 
+	// Kernels
 	if st, _, body, err := httpGET(c, b+"/api/kernels"); err == nil && st == 200 {
 		r.AuthStatus = "none"
 		if arr, err := parseJSONArray(body); err == nil {
 			r.RawData["kernels"] = len(arr)
 			r.Findings = append(r.Findings, Finding{
-				Category: "kernels", Title: "Running kernels accessible",
-				Detail:   fmt.Sprintf("%d active kernel(s) — code execution possible", len(arr)),
+				Category: "rce", Title: "Unauthenticated code execution",
+				Detail:   fmt.Sprintf("Anyone on the network gets a full shell. No token required. %d active kernel(s).", len(arr)),
 				Severity: "critical",
 			})
 		}
@@ -451,26 +476,50 @@ func enumJupyter(c *http.Client, svc ServiceMatch) EnumResult {
 		r.AuthStatus = "token/password required"
 	}
 
+	// Sessions
 	if st, _, body, err := httpGET(c, b+"/api/sessions"); err == nil && st == 200 {
 		if arr, err := parseJSONArray(body); err == nil {
 			r.RawData["sessions"] = len(arr)
-			r.Findings = append(r.Findings, Finding{
-				Category: "sessions", Title: "Sessions readable",
-				Detail:   fmt.Sprintf("%d active session(s)", len(arr)),
-				Severity: "critical",
-			})
 		}
 	}
 
+	// File listing + secret scanning
 	if st, _, body, err := httpGET(c, b+"/api/contents"); err == nil && st == 200 {
 		if m, err := parseJSON(body); err == nil {
 			contents := jArray(m, "content")
 			r.RawData["files"] = len(contents)
-			r.Findings = append(r.Findings, Finding{
-				Category: "files", Title: "File listing accessible",
-				Detail:   fmt.Sprintf("%d files/dirs in root", len(contents)),
-				Severity: "critical",
-			})
+
+			// Look for sensitive files
+			sensitiveFiles := []string{".env", ".env.local", ".env.production", "config.py", "settings.py", "credentials.json"}
+			for _, item := range contents {
+				im, ok := item.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				fname := jStr(im, "name")
+				for _, sf := range sensitiveFiles {
+					if strings.EqualFold(fname, sf) || strings.HasSuffix(strings.ToLower(fname), ".env") {
+						// Try to read the file
+						fURL := fmt.Sprintf("%s/api/contents/%s", b, fname)
+						if fs, _, fb, fe := httpGET(c, fURL); fe == nil && fs == 200 {
+							if fm, fe := parseJSON(fb); fe == nil {
+								content := jStr(fm, "content")
+								if content != "" {
+									scanSecrets(content, &r)
+								}
+							}
+						}
+						break
+					}
+				}
+			}
+
+			if len(contents) > 0 {
+				r.Findings = append(r.Findings, Finding{
+					Category: "files", Title: fmt.Sprintf("File listing accessible — %d files/dirs in root", len(contents)),
+					Severity: "high",
+				})
+			}
 		}
 	}
 
@@ -487,10 +536,9 @@ func enumMLflow(c *http.Client, svc ServiceMatch) EnumResult {
 	if st, _, body, err := httpGET(c, b+"/api/2.0/mlflow/experiments/list"); err == nil && st == 200 {
 		if m, err := parseJSON(body); err == nil {
 			exps := jArray(m, "experiments")
-			r.RawData["experiments"] = len(exps)
+			r.Details = append(r.Details, fmt.Sprintf("Experiments: %d", len(exps)))
 			r.Findings = append(r.Findings, Finding{
-				Category: "experiments", Title: "Experiments accessible",
-				Detail:   fmt.Sprintf("%d experiments readable", len(exps)),
+				Category: "experiments", Title: fmt.Sprintf("%d experiments accessible", len(exps)),
 				Severity: "high",
 			})
 		}
@@ -499,10 +547,9 @@ func enumMLflow(c *http.Client, svc ServiceMatch) EnumResult {
 	if st, _, body, err := httpGET(c, b+"/api/2.0/mlflow/registered-models/list"); err == nil && st == 200 {
 		if m, err := parseJSON(body); err == nil {
 			models := jArray(m, "registered_models")
-			r.RawData["registered_models"] = len(models)
+			r.Details = append(r.Details, fmt.Sprintf("Registered models: %d", len(models)))
 			r.Findings = append(r.Findings, Finding{
-				Category: "models", Title: "Registered models accessible",
-				Detail:   fmt.Sprintf("%d registered models", len(models)),
+				Category: "models", Title: fmt.Sprintf("%d registered models accessible", len(models)),
 				Severity: "high",
 			})
 		}
@@ -511,18 +558,16 @@ func enumMLflow(c *http.Client, svc ServiceMatch) EnumResult {
 	return r
 }
 
-// ── Generic checks (runs for every service) ─────────────────────────
+// ── Generic checks ──────────────────────────────────────────────────
 
 func checkGeneric(c *http.Client, svc ServiceMatch) []Finding {
 	var findings []Finding
 	b := svc.BaseURL
 
-	// CORS
 	if _, hdrs, _, err := httpGET(c, b+"/"); err == nil {
 		if cors, ok := hdrs["Access-Control-Allow-Origin"]; ok && cors == "*" {
 			findings = append(findings, Finding{
-				Category: "cors", Title: "Wildcard CORS policy",
-				Detail:   "Access-Control-Allow-Origin: *",
+				Category: "cors", Title: "CORS: Access-Control-Allow-Origin: *",
 				Severity: "medium",
 			})
 		}
@@ -536,26 +581,13 @@ func checkGeneric(c *http.Client, svc ServiceMatch) []Finding {
 		}
 	}
 
-	// API key patterns in match body
 	if svc.MatchBody != nil {
 		bodyStr := string(svc.MatchBody)
-		keyPatterns := []struct {
-			pat  string
-			name string
-		}{
-			{"sk-proj-", "OpenAI API key"},
-			{"sk-ant-", "Anthropic API key"},
-			{"AKIA", "AWS access key"},
-			{"ghp_", "GitHub PAT"},
-			{"glpat-", "GitLab PAT"},
-			{"xoxb-", "Slack bot token"},
-			{"xoxp-", "Slack user token"},
-		}
-		for _, kp := range keyPatterns {
-			if strings.Contains(bodyStr, kp.pat) {
+		for _, sp := range secretPatterns {
+			if strings.Contains(bodyStr, sp.Pattern) {
 				findings = append(findings, Finding{
-					Category: "secrets", Title: fmt.Sprintf("Possible %s in response", kp.name),
-					Detail:   fmt.Sprintf("Pattern '%s' found in probe response", kp.pat),
+					Category: "secrets", Title: fmt.Sprintf("Possible %s in response", sp.Name),
+					Detail:   fmt.Sprintf("Pattern '%s' found in probe response", sp.Pattern),
 					Severity: "critical",
 				})
 			}
@@ -565,8 +597,6 @@ func checkGeneric(c *http.Client, svc ServiceMatch) []Finding {
 	return findings
 }
 
-// ── Risk computation ────────────────────────────────────────────────
-
 func computeRisk(r EnumResult) string {
 	ranks := map[string]int{"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 	best := "info"
@@ -575,7 +605,6 @@ func computeRisk(r EnumResult) string {
 			best = f.Severity
 		}
 	}
-	// Unauthenticated + high severity = critical
 	if r.AuthStatus == "none" && best == "high" {
 		return "critical"
 	}

@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-func scanPorts(targets []Target, timeout time.Duration, threads int, verbose bool) []PortResult {
+func scanPorts(targets []Target, timeout time.Duration, threads int, verbose bool, progress *atomic.Int64) []PortResult {
 	var (
 		results []PortResult
 		mu      sync.Mutex
@@ -23,6 +24,7 @@ func scanPorts(targets []Target, timeout time.Duration, threads int, verbose boo
 			go func(host string, port int) {
 				defer wg.Done()
 				defer pool.Release()
+				defer progress.Add(1)
 
 				addr := fmt.Sprintf("%s:%d", host, port)
 				conn, err := net.DialTimeout("tcp", addr, timeout)
@@ -41,7 +43,6 @@ func scanPorts(targets []Target, timeout time.Duration, threads int, verbose boo
 					Headers: make(map[string]string),
 				}
 
-				// Try HTTPS then HTTP for basic info
 				for _, scheme := range []string{"https", "http"} {
 					url := fmt.Sprintf("%s://%s:%d/", scheme, host, port)
 					status, hdrs, body, err := httpGET(client, url)
@@ -62,8 +63,7 @@ func scanPorts(targets []Target, timeout time.Duration, threads int, verbose boo
 				}
 
 				if verbose {
-					fmt.Printf("    %s %s (HTTP %d, server: %s)\n",
-						green("open"), addr, r.StatusCode, r.Server)
+					fmt.Printf("    %s %s (HTTP %d)\n", green("open"), addr, r.StatusCode)
 				}
 
 				mu.Lock()

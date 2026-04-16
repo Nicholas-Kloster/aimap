@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,12 +23,10 @@ func main() {
 	verbose := flag.Bool("v", false, "Verbose output")
 	flag.Parse()
 
-	// Accept positional arg as target
 	if *target == "" && flag.NArg() > 0 {
 		*target = flag.Arg(0)
 	}
 
-	// Build host list
 	var hosts []string
 	if *target != "" {
 		hosts = parseTargets(*target)
@@ -49,18 +48,17 @@ func main() {
 	}
 
 	if len(hosts) == 0 {
-		fmt.Println(bold("aimap") + " v1.0.0 -- AI Infrastructure Scanner")
+		printBanner()
 		fmt.Println()
-		fmt.Println("Usage:")
-		fmt.Println("  aimap -target <ip|host|cidr> [flags]")
-		fmt.Println("  aimap -list targets.txt [flags]")
+		fmt.Println("  Usage:")
+		fmt.Println("    aimap -target <ip|host|cidr> [flags]")
+		fmt.Println("    aimap -list targets.txt [flags]")
 		fmt.Println()
 		flag.PrintDefaults()
-		fmt.Printf("\nFingerprints: %d AI/ML services\n", len(Fingerprints))
+		fmt.Printf("\n  Fingerprints: %d AI/ML services\n\n", len(Fingerprints))
 		os.Exit(0)
 	}
 
-	// Parse ports
 	var portList []int
 	for _, p := range strings.Split(*ports, ",") {
 		if n, err := strconv.Atoi(strings.TrimSpace(p)); err == nil {
@@ -68,52 +66,94 @@ func main() {
 		}
 	}
 
-	// Build scan targets
 	targets := make([]Target, len(hosts))
 	for i, h := range hosts {
 		targets[i] = Target{Host: h, Ports: portList}
 	}
 
-	// ── Phase 0: Banner ──────────────────────────────────────────
-	printBanner(hosts, portList)
+	startTime := time.Now()
 
-	// ── Phase 1: Port scan ───────────────────────────────────────
-	fmt.Printf("\n%s Phase 1: Port Scanning (%d host(s) x %d ports)\n",
-		bold("[*]"), len(hosts), len(portList))
-	openPorts := scanPorts(targets, *timeout, *threads, *verbose)
-	fmt.Printf("%s Found %s open port(s)\n",
-		green("[+]"), green(fmt.Sprintf("%d", len(openPorts))))
+	// ── Banner ───────────────────────────────────────────────────
+	printBanner()
+
+	// ── Phase 1: Port Scan ───────────────────────────────────────
+	printPhase(1, "PORT DISCOVERY")
+	fmt.Println()
+	fmt.Printf("    Scanning %s (%s hosts)\n", *target, fmtNum(len(hosts)))
+
+	portStrs := make([]string, len(portList))
+	for i, p := range portList {
+		portStrs[i] = fmt.Sprintf("%d", p)
+	}
+	portStr := strings.Join(portStrs, ",")
+	if len(portStr) > 55 {
+		portStr = portStr[:52] + "..."
+	}
+	fmt.Printf("    Ports: %s\n", portStr)
+	fmt.Printf("    Threads: %d\n", *threads)
+	fmt.Println()
+
+	var progress atomic.Int64
+	total := int64(len(hosts)) * int64(len(portList))
+
+	var stopCh chan struct{}
+	if !*verbose {
+		stopCh = startProgress(&progress, total)
+	}
+
+	openPorts := scanPorts(targets, *timeout, *threads, *verbose, &progress)
+
+	if !*verbose {
+		close(stopCh)
+		time.Sleep(20 * time.Millisecond) // let goroutine exit
+		finalizeProgress(int64(len(hosts)))
+	}
+
+	printOpenPorts(openPorts)
 
 	if len(openPorts) == 0 {
-		fmt.Printf("%s No open ports — nothing to fingerprint.\n", yellow("[!]"))
+		fmt.Printf("\n  %s No open ports — nothing to fingerprint.\n\n", yellow("[!]"))
 		if *output != "" {
-			rpt := buildReport(hosts, len(portList), openPorts, nil, nil)
+			rpt := buildReport(hosts, len(portList), openPorts, nil, nil, time.Since(startTime))
 			writeJSON(rpt, *output)
 		}
 		return
 	}
 
 	// ── Phase 2: Fingerprinting ──────────────────────────────────
-	fmt.Printf("\n%s Phase 2: Service Fingerprinting (%d fingerprints x %d ports)\n",
-		bold("[*]"), len(Fingerprints), len(openPorts))
-	services := matchFingerprints(openPorts, *timeout, *verbose)
-	fmt.Printf("%s Identified %s AI/ML service(s)\n",
-		green("[+]"), green(fmt.Sprintf("%d", len(services))))
+	printPhase(2, "AI SERVICE FINGERPRINTING")
 
-	// ── Phase 3: Deep enumeration ────────────────────────────────
-	var enumResults []EnumResult
-	if len(services) > 0 {
-		fmt.Printf("\n%s Phase 3: Deep Enumeration\n", bold("[*]"))
-		enumResults = runEnumerators(services, *timeout, *verbose)
-		fmt.Printf("%s Completed %d service enumeration(s)\n",
-			green("[+]"), len(enumResults))
+	services := matchFingerprints(openPorts, *timeout, *verbose)
+
+	if len(services) == 0 {
+		fmt.Printf("\n  %s No AI/ML services identified on open ports.\n\n", yellow("[!]"))
+		if *output != "" {
+			rpt := buildReport(hosts, len(portList), openPorts, services, nil, time.Since(startTime))
+			writeJSON(rpt, *output)
+		}
+		return
 	}
 
-	// ── Report ───────────────────────────────────────────────────
-	rpt := buildReport(hosts, len(portList), openPorts, services, enumResults)
-	printReport(rpt)
+	printFingerprints(services, len(openPorts))
+
+	// ── Phase 3: Deep Enumeration ────────────────────────────────
+	printPhase(3, "DEEP ENUMERATION")
+
+	enumResults := runEnumerators(services, *timeout, *verbose)
+
+	for _, er := range enumResults {
+		printServiceCard(er)
+	}
+
+	// ── Summary ──────────────────────────────────────────────────
+	printSummaryTable(enumResults)
+
+	rpt := buildReport(hosts, len(portList), openPorts, services, enumResults, time.Since(startTime))
+	printStats(rpt)
 
 	if *output != "" {
 		writeJSON(rpt, *output)
 	}
+
+	fmt.Println()
 }
