@@ -1,0 +1,199 @@
+.\" Manpage for aimap.
+.\" Contact security@d5data.ai or open an issue on github.com/Nicholas-Kloster/aimap
+.TH AIMAP 1 "April 2026" "aimap 1.1" "Security Tools"
+
+.SH NAME
+aimap \- AI infrastructure scanner: find exposed LLMs, vector databases, and ML services
+
+.SH SYNOPSIS
+.B aimap
+.RB [ \-target
+.IR IP | HOSTNAME | CIDR ]
+.RB [ \-list
+.IR FILE ]
+.RB [ \-ports
+.IR LIST ]
+.RB [ \-threads
+.IR N ]
+.RB [ \-timeout
+.IR DURATION ]
+.RB [ \-o
+.IR FILE ]
+.RB [ \-v ]
+
+.SH DESCRIPTION
+.B aimap
+is a purpose-built scanner for AI and machine learning infrastructure. Where
+.BR nmap (1)
+and
+.BR nuclei (1)
+identify that a service is running, aimap identifies
+.I which AI/ML service
+is running and whether it is exposing data, PII, credentials, or compute.
+.PP
+aimap is intended for defensive use: security teams running it against their own networks to discover shadow AI deployments, audit exposure before attackers do, and integrate AI-service checks into CI/CD deployment gates.
+.PP
+All probes are read-only HTTP GETs. aimap never writes, authenticates, or exploits. It is safe to run against production infrastructure you own.
+
+.SH SCANNING PIPELINE
+aimap operates in three phases:
+.TP
+.B Phase 1 \- Port discovery
+Parallel TCP connect scan across the specified ports. Default port list covers AI-service defaults including Ollama, Qdrant, ChromaDB, Milvus, MLflow, Jupyter, Ray, and Docker Registry on common non-standard ports.
+.TP
+.B Phase 2 \- Service fingerprinting
+For each open port, aimap matches against 23 built-in AI/ML service fingerprints using path and body signatures.
+.TP
+.B Phase 3 \- Deep enumeration
+Service-specific enumerators inspect schemas, collections, models, experiments, and configuration to surface actionable findings (PII fields, unauthenticated RCE, credential exposure).
+
+.SH OPTIONS
+.TP
+.BR \-target " " \fIIP|HOSTNAME|CIDR\fR
+Single target to scan. Accepts an IPv4 address, hostname, or CIDR block (e.g.,
+.IR 10.0.0.0/24 ).
+.TP
+.BR \-list " " \fIFILE\fR
+Path to a file containing targets, one per line. Lines starting with
+.B #
+are treated as comments and ignored.
+.TP
+.BR \-ports " " \fILIST\fR
+Comma-separated list of ports to scan. Default:
+.I 8080,8443,11434,8000,3000,6333,19530,9091,8888,8501,9090,5000,5001,4000,7860,3001,8265,51000,55000
+.TP
+.BR \-threads " " \fIN\fR
+Number of concurrent scan goroutines. Default:
+.BR 20 .
+Internal-network scans typically benefit from 50-100. External scans should stay at 10-20 to avoid tripping rate limits or alerting.
+.TP
+.BR \-timeout " " \fIDURATION\fR
+Per-connection timeout. Default:
+.BR 5s .
+Reduce to 2-3s on low-latency internal networks; increase to 10s for external scans.
+.TP
+.BR \-o " " \fIFILE\fR
+Write a full JSON report to
+.IR FILE .
+Machine-readable output suitable for CI/CD integration or diffing across scans.
+.TP
+.B \-v
+Verbose output. Shows per-host match reasoning, which helps interpret unexpected findings.
+
+.SH SUPPORTED SERVICES
+aimap v1.1 fingerprints 23 AI/ML service types across six categories:
+.TP
+.B Vector databases
+Weaviate, ChromaDB, Qdrant, Milvus
+.TP
+.B LLM runtimes
+Ollama, vLLM, LocalAI, text-generation-webui
+.TP
+.B ML platforms
+MLflow, TensorFlow Serving, Triton Inference Server, Ray Serve, Ray Dashboard, Kubeflow
+.TP
+.B Orchestration and UI
+LangServe, Flowise, Dify, Open WebUI, LiteLLM, BentoML
+.TP
+.B Observability
+Langfuse
+.TP
+.B Notebooks and adjacent
+Jupyter Notebook, Docker Registry
+
+.SH RISK LEVELS
+aimap computes a risk level per service based on findings:
+.TP
+.B critical
+Exploitable now, no authentication required. Examples: unauthenticated Jupyter code execution, exposed Flowise credentials endpoint, Dify with unclaimed admin account.
+.TP
+.B high
+Sensitive data accessible without authentication. Examples: vector database with PII fields exposed, Langfuse trace data readable, MLflow experiments accessible.
+.TP
+.B medium
+Information disclosure or misconfiguration. Examples: version leaks, CORS misconfiguration, service identified with empty data.
+.TP
+.B low
+Service detected with minor issues. Examples: header disclosure.
+.TP
+.B info
+Service identified, authentication in place, no actionable findings.
+.PP
+Escalation rule: if authentication status is
+.B none
+and any finding is
+.BR high ,
+the overall risk is promoted to
+.BR critical .
+
+.SH EXAMPLES
+.TP
+Scan a single internal host for AI services:
+.B aimap \-target 10.1.2.3 \-v
+
+.TP
+Audit an entire internal /16 for shadow AI deployments:
+.B aimap \-target 10.0.0.0/16 \-threads 100 \-timeout 3s \-o audit.json
+
+.TP
+Check a list of public-facing hosts for AI exposure:
+.B aimap \-list public-ips.txt \-threads 10 \-timeout 10s \-o external.json \-v
+
+.TP
+CI/CD deployment gate (fail build on critical findings):
+.B aimap \-target $DEPLOY_URL \-o check.json && jq '.enum_results[] | select(.risk_level == "critical")' check.json
+
+.TP
+Investigate a single suspected host with wide port coverage:
+.B aimap \-target 10.5.5.5 \-v \-ports 8000,8080,8443,8888,9091,11434,6333,19530,5000,3000,7860,4000,51000,55000
+
+.SH OUTPUT
+aimap prints a color-coded terminal summary showing open ports, identified services, per-service findings, and an overall risk assessment.
+.PP
+With
+.BR \-o ,
+a complete JSON report is written containing:
+.IP \(bu 2
+Scan metadata (target, duration, ports scanned)
+.IP \(bu 2
+Open ports with banner data
+.IP \(bu 2
+Identified services with version and match details
+.IP \(bu 2
+Deep enumeration results per service
+.IP \(bu 2
+Findings with severity, category, and remediation-relevant context
+.IP \(bu 2
+Aggregate summary counts
+
+.SH AUTHORIZATION
+aimap performs active scanning (TCP connections and HTTP probes). Only run it against systems you own or have explicit written authorization to test. Unauthorized scanning of third-party infrastructure may violate local computer-misuse laws.
+.PP
+For passive reconnaissance of external targets, use dedicated OSINT tools instead (Shodan, Censys, Certificate Transparency logs).
+
+.SH FILES
+No configuration files. All options are controlled via command-line flags.
+
+.SH EXIT STATUS
+.TP
+.B 0
+Scan completed successfully (findings may still be present; check output).
+.TP
+.B 1
+Invalid arguments or failure opening target list file.
+
+.SH SEE ALSO
+.BR nmap (1),
+.BR nuclei (1),
+.BR masscan (1)
+
+.SH AUTHOR
+Written by Nicholas Kloster (NuClide).
+
+.SH REPORTING BUGS
+Report issues at
+.UR https://github.com/Nicholas-Kloster/aimap/issues
+.UE .
+
+.SH COPYRIGHT
+Copyright \(co 2026 Nicholas Kloster. Licensed under the MIT License.
