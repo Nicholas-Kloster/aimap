@@ -4,9 +4,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// langfuseNextDataRe extracts the Next.js __NEXT_DATA__ JSON blob from a
+// server-rendered Langfuse page. The blob embeds `props.pageProps` which on
+// /auth/sign-in includes `signUpDisabled`, `authProviders`, and
+// `runningOnHuggingFaceSpaces` — the fastest way to audit a Langfuse
+// deployment's posture without logging in.
+var langfuseNextDataRe = regexp.MustCompile(`<script id="__NEXT_DATA__" type="application/json">(.+?)</script>`)
 
 // ── PII detection ───────────────────────────────────────────────────
 
@@ -660,15 +668,67 @@ func enumLangfuse(c *http.Client, svc ServiceMatch) EnumResult {
 	// because anyone can create an account and read existing org data in
 	// misconfigured deployments.
 
-	// Check for open signup (CRITICAL misconfig in self-hosted deployments)
-	if st, _, body, err := httpGET(c, b+"/api/auth/providers"); err == nil && st == 200 {
-		bodyStr := string(body)
-		if strings.Contains(bodyStr, "credentials") || strings.Contains(bodyStr, "email") {
-			r.Findings = append(r.Findings, Finding{
-				Category: "access", Title: "Authentication endpoint enumerable",
-				Detail:   "Sign-in providers readable; if signup is open, attackers can self-register and access org data",
-				Severity: "medium",
-			})
+	// Deep posture audit via /auth/sign-in — Langfuse SSR-embeds the auth
+	// config in a __NEXT_DATA__ JSON blob. This is the fastest way to see
+	// whether signup is open and which SSO providers (if any) are configured,
+	// without having to create an account.
+	if st, _, body, err := httpGET(c, b+"/auth/sign-in"); err == nil && st == 200 {
+		if m := langfuseNextDataRe.FindSubmatch(body); len(m) == 2 {
+			var wrap struct {
+				Props struct {
+					PageProps map[string]interface{} `json:"pageProps"`
+				} `json:"props"`
+			}
+			if err := json.Unmarshal(m[1], &wrap); err == nil {
+				pp := wrap.Props.PageProps
+				r.RawData["sign_in_config"] = pp
+
+				// signUpDisabled: false → anyone on the internet can register.
+				// For a self-hosted Langfuse on corporate infra, this is almost
+				// always unintended.
+				if v, ok := pp["signUpDisabled"].(bool); ok && !v {
+					r.Findings = append(r.Findings, Finding{
+						Category: "access", Title: "Langfuse signup is open to the public",
+						Detail:   "signUpDisabled=false. Any internet visitor can register an account, persisting a user record in the operator's Postgres and enabling authenticated API probing. Set LANGFUSE_AUTH_DISABLE_SIGNUP=true or restrict via LANGFUSE_AUTH_DOMAINS_*.",
+						Severity: "medium",
+					})
+				}
+
+				// authProviders: inventory configured SSO and flag the common
+				// misconfig of password-only auth on a production deployment.
+				if ap, ok := pp["authProviders"].(map[string]interface{}); ok {
+					var enabled []string
+					credsOnly := false
+					for name, val := range ap {
+						if b, ok := val.(bool); ok && b {
+							enabled = append(enabled, name)
+						}
+					}
+					if len(enabled) == 1 && enabled[0] == "credentials" {
+						credsOnly = true
+					}
+					if len(enabled) > 0 {
+						r.Details = append(r.Details, "Auth providers: "+strings.Join(enabled, ", "))
+					}
+					if credsOnly {
+						r.Findings = append(r.Findings, Finding{
+							Category: "access", Title: "Credentials-only auth (no SSO configured)",
+							Detail:   "Only password-based authentication is enabled. No OIDC/SAML provider configured, which removes the identity-provider brute-force ceiling and centralized MFA. Configure LANGFUSE_AUTH_*_CLIENT_* for Google/GitHub/Okta/Azure AD.",
+							Severity: "low",
+						})
+					}
+				}
+
+				// runningOnHuggingFaceSpaces flag — informational. This alters
+				// default auth semantics and sometimes exposes SPACE_HOST.
+				if v, ok := pp["runningOnHuggingFaceSpaces"].(bool); ok && v {
+					r.Findings = append(r.Findings, Finding{
+						Category: "info", Title: "Running as HuggingFace Space",
+						Detail:   "runningOnHuggingFaceSpaces=true — HF Spaces deployments use different default auth semantics.",
+						Severity: "info",
+					})
+				}
+			}
 		}
 	}
 
