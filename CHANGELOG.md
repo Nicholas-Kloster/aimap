@@ -2,6 +2,58 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.2.0] — 2026-04-17
+
+Companion-tool release. No changes to the aimap Go binary, its fingerprint database, CLI flags, or JSON schema.
+
+### Added
+
+**`aimap-profile/` — target profiling + classification + disclosure-routing companion tool.**
+
+Where aimap *fingerprints services* on a target (what's running?), `aimap-profile` *profiles the target itself* (what IS it? how should I approach it? where do I disclose?). The two tools are designed to be used together — profile first, then scan.
+
+- Single-file Python (~500 LoC), read-only, passive-first.
+- Reads Shodan historical data + live DNS/WHOIS/TLS cert + security.txt probes + RFC 9116 disclosure channels. Emits structured JSON designed for LLM/pipeline consumption.
+- Eight analysis modules: identity, surface_passive (Shodan), surface_active (nmap, opt-in), discrepancy + honeypot scoring, classification + ethics flags, adjacency (PTR /29 + CT namespaces), web_surface (Nuxt/Next.js config extraction, token regex), disclosure (security.txt, MX, bounty hints).
+
+Verified **100% primary-category accuracy across 17 real-world targets** spanning honeypot / clinical_hipaa / personal_device / commercial_staging / commercial_saas / research_lab / education classifications.
+
+Honeypot detection example:
+
+```json
+"discrepancy": {
+  "honeypot_score": 6,
+  "verdict": "likely honeypot / deception asset",
+  "signals": ["honeypot combo: [GlobalProtect, Ivanti] (+3)",
+              "honeypot combo: [Asus, FortiGate] (+3)"]
+}
+```
+
+HIPAA-boundary detection example:
+
+```json
+"classification": {
+  "primary_category": "clinical_hipaa",
+  "ethics_flags": [
+    "HIPAA-adjacent network — no active probing of clinical systems",
+    "Educational institution — CFAA exposure; prefer institutional CSIRT disclosure"
+  ]
+}
+```
+
+Run with `./aimap-profile/aimap_profile.py --target <ip|host> --mode fast`. See `aimap-profile/README.md` for heuristics reference and roadmap.
+
+### Unchanged
+
+- aimap Go binary (still v1.1.1)
+- Fingerprint database (23 services)
+- Default `-ports` list
+- PKGBUILD / man page / CLI flags / JSON output schema
+
+The aimap-profile companion is a separate script with its own versioning (v0.1.0); upgrading or skipping it does not affect `aimap` itself.
+
+---
+
 ## [v1.1.0] — 2026-04-16
 
 Additive release. No CLI, JSON schema, or existing fingerprint output changes.

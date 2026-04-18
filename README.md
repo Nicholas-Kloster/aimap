@@ -34,6 +34,19 @@ Generic scanners (`nmap`, `nuclei`) don't identify these as AI services, so they
 
 Each service has a dedicated fingerprint; several also have deep enumerators that surface PII fields, unauthenticated RCE, exposed credentials, and other actionable findings.
 
+## Companion tool: `aimap-profile`
+
+Where aimap *fingerprints services* on a target, [`aimap-profile/`](./aimap-profile/) *profiles the target itself* — what is it, what category (personal device / institutional / commercial / research / honeypot), what's the ethics posture (HIPAA? CFAA? safe harbor?), who are its DNS neighbors, and where do you report a finding?
+
+Single-file Python, emits structured JSON for LLM/pipeline consumption. Verified 100% primary-category accuracy across 17 real-world targets (campus infra, commercial staging, hospital research-compute, consumer devices, honeypots).
+
+```bash
+./aimap-profile/aimap_profile.py --target 129.49.255.85 --mode fast
+# => {"classification": {"primary_category": "clinical_hipaa", ...}}
+```
+
+See [aimap-profile/README.md](./aimap-profile/README.md) for details.
+
 ## Install
 
 ### Go install (recommended for developers)
