@@ -15,7 +15,7 @@ func main() {
 	target := flag.String("target", "", "Single target (IP, hostname, or CIDR)")
 	list := flag.String("list", "", "File containing list of targets (one per line)")
 	ports := flag.String("ports",
-		"8080,8443,11434,8000,3000,6333,19530,9091,8888,8501,9090,5000,5001,4000,7860,3001,8265,51000,55000",
+		"80,443,8080,8443,11434,8000,3000,6333,19530,9091,8888,8501,9090,5000,5001,4000,7860,3001,8265,51000,55000,2379,5678,9000,30000,18789",
 		"Comma-separated ports to scan")
 	timeout := flag.Duration("timeout", 5*time.Second, "Connection timeout")
 	threads := flag.Int("threads", 20, "Concurrent scan threads")

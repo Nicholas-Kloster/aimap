@@ -65,12 +65,12 @@ func renderProgress(current, total int64) {
 		filled = width
 	}
 	bar := cGreen + strings.Repeat("█", filled) + cReset + strings.Repeat(" ", width-filled)
-	fmt.Printf("\r    [%s] %.0f%% — %s hosts scanned", bar, pct, fmtNum(int(current)))
+	fmt.Printf("\r    [%s] %.0f%% — %s ports scanned", bar, pct, fmtNum(int(current)))
 }
 
 func finalizeProgress(total int64) {
 	bar := green(strings.Repeat("█", 40))
-	fmt.Printf("\r    [%s] 100%% — %s hosts scanned\n", bar, fmtNum(int(total)))
+	fmt.Printf("\r    [%s] 100%% — %s ports scanned\n", bar, fmtNum(int(total)))
 }
 
 // ── Phase 1 results ─────────────────────────────────────────────────

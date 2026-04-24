@@ -1,8 +1,15 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -121,10 +128,40 @@ func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool
 			result = enumMilvus(client, svc)
 		case "Langfuse":
 			result = enumLangfuse(client, svc)
+		case "SillyTavern":
+			result = enumSillyTavern(client, svc)
+		case "Open WebUI":
+			result = enumOpenWebUI(client, svc)
+		case "OpenHands":
+			result = enumOpenHands(client, svc)
+		case "Mem0":
+			result = enumMem0(client, svc)
+		case "Coolify":
+			result = enumCoolify(client, svc)
+		case "Clawdbot":
+			result = enumClawdbot(client, svc)
+		case "Open Directory":
+			result = enumOpenDirectory(client, svc)
 		case "Dify":
 			result = enumDify(client, svc)
 		case "Docker Registry":
 			result = enumDockerRegistry(client, svc)
+		case "Grafana":
+			result = enumGrafana(client, svc)
+		case "Prometheus":
+			result = enumPrometheus(client, svc)
+		case "etcd":
+			result = enumEtcd(client, svc)
+		case "MinIO":
+			result = enumMinIO(client, svc)
+		case "n8n":
+			result = enumN8n(client, svc)
+		case "SGLang":
+			result = enumSGLang(client, svc)
+		case "vLLM":
+			result = enumVLLM(client, svc)
+		case "AI TTS Server":
+			result = enumTTS(client, svc)
 		default:
 			result = mkResult(svc)
 		}
@@ -448,6 +485,12 @@ func enumFlowise(c *http.Client, svc ServiceMatch) EnumResult {
 				Severity: "high",
 			})
 		}
+		r.Findings = append(r.Findings, Finding{
+			Category: "cve",
+			Title:    "CVE-2024-36420 — Auth bypass via path traversal (< 1.8.2)",
+			Detail:   "Path traversal grants unauth access to chatflow config and embedded API keys. Verify version.",
+			Severity: "high",
+		})
 	} else if st == 401 || st == 403 {
 		r.AuthStatus = fmt.Sprintf("required (HTTP %d)", st)
 	}
@@ -570,6 +613,13 @@ func enumMLflow(c *http.Client, svc ServiceMatch) EnumResult {
 			})
 		}
 	}
+
+	r.Findings = append(r.Findings, Finding{
+		Category: "cve",
+		Title:    "CVE-2024-37052…37060 — RCE via model deserialization",
+		Detail:   "Any exposed MLflow with write access to the model registry is RCE. Chain: upload malicious pickle model → trigger load → code execution.",
+		Severity: "critical",
+	})
 
 	return r
 }
@@ -821,16 +871,102 @@ func enumDify(c *http.Client, svc ServiceMatch) EnumResult {
 	return r
 }
 
-// ── Docker Registry (handoff only — not an AI service) ─────────────
+// ── SillyTavern ─────────────────────────────────────────────────────
+
+func enumSillyTavern(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	r.AuthStatus = "basic"
+	if strings.HasPrefix(svc.BaseURL, "http://") {
+		r.Findings = append(r.Findings, Finding{
+			Category: "access",
+			Title:    "SillyTavern protected by HTTP Basic Auth (cleartext credentials)",
+			Detail:   "Basic Auth over plain HTTP transmits base64-encoded credentials without encryption. Upgrade to HTTPS or place behind a TLS reverse proxy.",
+			Severity: "medium",
+		})
+	}
+	return r
+}
+
+// ── Open WebUI ──────────────────────────────────────────────────────
+
+func enumOpenWebUI(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+
+	if st, _, body, err := httpGET(c, b+"/api/version"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.Version = jStr(m, "version")
+		}
+	}
+
+	authEnabled := true
+	signupEnabled := false
+	if st, _, body, err := httpGET(c, b+"/api/config"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			if feats, ok := m["features"].(map[string]interface{}); ok {
+				if v, ok := feats["auth"].(bool); ok {
+					authEnabled = v
+				}
+				if v, ok := feats["enable_signup"].(bool); ok {
+					signupEnabled = v
+				}
+			}
+			r.RawData["config"] = m
+		}
+	}
+
+	if !authEnabled {
+		r.AuthStatus = "none"
+		r.Findings = append(r.Findings, Finding{
+			Category: "access",
+			Title:    "Open WebUI running without authentication",
+			Detail:   "AUTH_ENABLED=false — all API endpoints and chat history accessible without credentials.",
+			Severity: "critical",
+		})
+	} else if signupEnabled {
+		r.AuthStatus = "open registration"
+		r.Findings = append(r.Findings, Finding{
+			Category: "access",
+			Title:    "Open WebUI allows public self-registration",
+			Detail:   "enable_signup=true — anyone can create an account and access connected LLM backends.",
+			Severity: "high",
+		})
+	} else {
+		r.AuthStatus = "auth required"
+	}
+
+	// Even with auth enabled, check if the OpenAI-compatible API is exposed
+	if st, _, body, err := httpGET(c, b+"/api/models"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			if data := jArray(m, "data"); data != nil {
+				r.Findings = append(r.Findings, Finding{
+					Category: "access",
+					Title:    fmt.Sprintf("Open WebUI /api/models unauthenticated — %d model(s) listed", len(data)),
+					Severity: "critical",
+				})
+				r.AuthStatus = "none"
+			}
+		}
+	}
+
+	return r
+}
+
+// ── Docker Registry ─────────────────────────────────────────────────
+
+var aiRegistryImages = []string{
+	"ollama", "vllm", "localai", "llama", "mistral", "deepseek",
+	"ragflow", "langflow", "flowise", "dify", "openwebui", "open-webui",
+	"sglang", "lmdeploy", "triton", "mlflow", "ray",
+	"pytorch", "tensorflow", "transformers", "huggingface",
+	"chromadb", "qdrant", "weaviate", "milvus",
+	"n8n", "langchain", "autogen", "comfyui", "stable-diffusion",
+}
 
 func enumDockerRegistry(c *http.Client, svc ServiceMatch) EnumResult {
 	r := mkResult(svc)
 	b := svc.BaseURL
 	r.AuthStatus = "unknown"
-
-	// This is a non-AI adjacent service. aimap does not triage Docker
-	// Registries in depth; that is nuclide-registry-recon's scope.
-	// We note presence and key posture only.
 
 	if st, hdrs, _, err := httpGET(c, b+"/v2/"); err == nil {
 		if st == 200 {
@@ -844,29 +980,893 @@ func enumDockerRegistry(c *http.Client, svc ServiceMatch) EnumResult {
 		}
 	}
 
-	// Catalog access check (read-only)
 	if st, _, body, err := httpGET(c, b+"/v2/_catalog"); err == nil && st == 200 {
 		if m, err := parseJSON(body); err == nil {
 			repos := jArray(m, "repositories")
 			r.RawData["repo_count"] = len(repos)
-			r.Details = append(r.Details, fmt.Sprintf("Anonymous /v2/_catalog accessible — %d repositories", len(repos)))
+			r.Details = append(r.Details, fmt.Sprintf("Repositories: %d", len(repos)))
+
+			// Score AI-relevant images
+			var aiRepos []string
+			for _, repo := range repos {
+				name, ok := repo.(string)
+				if !ok {
+					continue
+				}
+				lower := strings.ToLower(name)
+				for _, tag := range aiRegistryImages {
+					if strings.Contains(lower, tag) {
+						aiRepos = append(aiRepos, name)
+						break
+					}
+				}
+			}
+
+			if len(aiRepos) > 0 {
+				r.Details = append(r.Details, fmt.Sprintf("AI images: %s", strings.Join(aiRepos, ", ")))
+				r.Findings = append(r.Findings, Finding{
+					Category: "ai-images",
+					Title:    fmt.Sprintf("%d AI/ML images in anonymous registry — pull without auth", len(aiRepos)),
+					Detail:   strings.Join(aiRepos, ", "),
+					Severity: "high",
+				})
+			}
+
 			if len(repos) > 0 {
 				r.Findings = append(r.Findings, Finding{
-					Category: "adjacent", Title: fmt.Sprintf("Docker Registry — %d repos anonymously enumerable", len(repos)),
-					Detail:   "Adjacent to AI services. Use nuclide-registry-recon or scripts/registry_triage.py for full triage.",
+					Category: "access",
+					Title:    fmt.Sprintf("%d repos anonymously enumerable via /v2/_catalog", len(repos)),
 					Severity: "medium",
 				})
 			}
 		}
 	} else {
 		r.Findings = append(r.Findings, Finding{
-			Category: "adjacent", Title: "Docker Registry detected",
-			Detail:   "Adjacent to AI services. Not fully triaged by aimap. Use nuclide-registry-recon for depth.",
+			Category: "access", Title: "Docker Registry detected — catalog access denied",
 			Severity: "low",
 		})
 	}
 
 	return r
+}
+
+// ── Grafana ─────────────────────────────────────────────────────────
+
+func enumGrafana(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "unknown"
+
+	if st, _, body, err := httpGET(c, b+"/api/health"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.Version = jStr(m, "version")
+			r.RawData["health"] = m
+		}
+	}
+
+	// Datasources — unauthenticated access = credential exposure (DB URLs, API keys)
+	if st, _, body, err := httpGET(c, b+"/api/datasources"); err == nil {
+		if st == 200 {
+			r.AuthStatus = "none"
+			if arr, err := parseJSONArray(body); err == nil {
+				r.Details = append(r.Details, fmt.Sprintf("Datasources: %d", len(arr)))
+				r.Findings = append(r.Findings, Finding{
+					Category: "credentials",
+					Title:    fmt.Sprintf("%d datasources exposed — connection strings and keys readable", len(arr)),
+					Severity: "critical",
+				})
+			}
+		} else if st == 401 || st == 403 {
+			r.AuthStatus = fmt.Sprintf("required (HTTP %d)", st)
+		}
+	}
+
+	// Anonymous access check — Grafana has a grafana.ini anon.enabled option
+	if st, _, body, err := httpGET(c, b+"/api/org"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.AuthStatus = "none (anonymous access enabled)"
+			r.RawData["org"] = m
+			r.Findings = append(r.Findings, Finding{
+				Category: "access",
+				Title:    "Grafana anonymous access enabled — dashboards readable without login",
+				Severity: "medium",
+			})
+		}
+	}
+
+	// Alert rules may contain sensitive metric names and infra topology
+	if st, _, body, err := httpGET(c, b+"/api/ruler/grafana/api/v1/rules"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["alert_rules"] = m
+			r.Findings = append(r.Findings, Finding{
+				Category: "info",
+				Title:    "Alert rules readable — internal service topology disclosed",
+				Severity: "low",
+			})
+		}
+	}
+
+	return r
+}
+
+// ── Prometheus ──────────────────────────────────────────────────────
+
+func enumPrometheus(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "none"
+
+	if st, _, body, err := httpGET(c, b+"/api/v1/status/runtimeinfo"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			if data := jMap(m, "data"); data != nil {
+				r.Version = jStr(data, "version")
+				r.RawData["runtimeinfo"] = data
+			}
+		}
+	}
+
+	// Config dump — may contain scrape targets with credentials in URLs
+	if st, _, body, err := httpGET(c, b+"/api/v1/status/config"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			if data := jMap(m, "data"); data != nil {
+				cfg := jStr(data, "yaml")
+				scanSecrets(cfg, &r)
+				r.Findings = append(r.Findings, Finding{
+					Category: "config",
+					Title:    "Full Prometheus config readable — scrape targets and credentials exposed",
+					Detail:   "Check for basic_auth, bearer_token, and tls_config entries in the YAML dump.",
+					Severity: "high",
+				})
+			}
+		}
+	}
+
+	// Targets — full internal service map
+	if st, _, body, err := httpGET(c, b+"/api/v1/targets"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			if data := jMap(m, "data"); data != nil {
+				active := jArray(data, "activeTargets")
+				r.Details = append(r.Details, fmt.Sprintf("Active scrape targets: %d", len(active)))
+				r.RawData["target_count"] = len(active)
+				if len(active) > 0 {
+					r.Findings = append(r.Findings, Finding{
+						Category: "topology",
+						Title:    fmt.Sprintf("%d active scrape targets — full internal service map readable", len(active)),
+						Severity: "medium",
+					})
+				}
+			}
+		}
+	}
+
+	// Alert rules
+	if st, _, body, err := httpGET(c, b+"/api/v1/rules"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["rules"] = m
+		}
+	}
+
+	return r
+}
+
+// ── etcd ─────────────────────────────────────────────────────────────
+
+func enumEtcd(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "unknown"
+
+	if st, _, body, err := httpGET(c, b+"/version"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.Version = jStr(m, "etcdserver")
+			r.RawData["version"] = m
+		}
+	}
+
+	if st, _, body, err := httpGET(c, b+"/health"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["health"] = m
+			r.AuthStatus = "none"
+			r.Findings = append(r.Findings, Finding{
+				Category: "access",
+				Title:    "etcd unauthenticated — full cluster secret disclosure",
+				Detail:   "All Kubernetes secrets, service account tokens, kubeconfig data, and TLS certs readable via /v3/kv/range. Effectively cluster takeover.",
+				Severity: "critical",
+			})
+		}
+	}
+
+	// Key dump via gRPC-gateway (etcd v3 HTTP API)
+	// POST /v3/kv/range with empty key range returns all keys
+	if st, _, body, err := httpGET(c, b+"/v3/kv/range"); err == nil && st != 404 {
+		r.RawData["v3_api_accessible"] = true
+		r.Details = append(r.Details, fmt.Sprintf("v3 KV API: HTTP %d", st))
+		if st == 200 {
+			if m, err := parseJSON(body); err == nil {
+				if kvs := jArray(m, "kvs"); kvs != nil {
+					r.Details = append(r.Details, fmt.Sprintf("Keys returned: %d", len(kvs)))
+					scanSecrets(string(body), &r)
+				}
+			}
+		}
+	}
+
+	// Members — cluster topology
+	if st, _, body, err := httpGET(c, b+"/v3/cluster/member/list"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			members := jArray(m, "members")
+			r.Details = append(r.Details, fmt.Sprintf("Cluster members: %d", len(members)))
+			r.RawData["members"] = members
+		}
+	}
+
+	return r
+}
+
+// ── MinIO ────────────────────────────────────────────────────────────
+
+func enumMinIO(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "unknown"
+
+	if st, _, _, err := httpGET(c, b+"/minio/health/live"); err == nil && st == 200 {
+		r.AuthStatus = "S3 API (check bucket policies)"
+		r.Findings = append(r.Findings, Finding{
+			Category: "access",
+			Title:    "MinIO S3 API reachable",
+			Detail:   "Check anonymous bucket policies. Anonymous GET/LIST on buckets exposes stored model artifacts, training data, and MLflow experiment artifacts.",
+			Severity: "medium",
+		})
+	}
+
+	// S3 list-buckets (root /) — requires auth on MinIO by default,
+	// but anonymous access is configurable per-bucket
+	if st, _, body, err := httpGET(c, b+"/"); err == nil {
+		if st == 200 && strings.Contains(strings.ToLower(string(body)), "<listallmybucketsresult") {
+			r.AuthStatus = "none — anonymous bucket listing"
+			r.Findings = append(r.Findings, Finding{
+				Category: "data",
+				Title:    "Anonymous bucket listing enabled — all buckets enumerable",
+				Severity: "critical",
+			})
+		} else if strings.Contains(strings.ToLower(string(body)), "accessdenied") {
+			r.AuthStatus = "required"
+		}
+	}
+
+	return r
+}
+
+// ── n8n ──────────────────────────────────────────────────────────────
+
+func enumN8n(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "unknown"
+
+	// Unauthenticated workflow enumeration
+	if st, _, body, err := httpGET(c, b+"/rest/active-workflows"); err == nil {
+		if st == 200 {
+			r.AuthStatus = "none"
+			if m, err := parseJSON(body); err == nil {
+				workflows := jArray(m, "data")
+				r.Details = append(r.Details, fmt.Sprintf("Active workflows: %d", len(workflows)))
+				r.Findings = append(r.Findings, Finding{
+					Category: "rce",
+					Title:    fmt.Sprintf("n8n unauthenticated — %d active workflows — RCE by design", len(workflows)),
+					Detail:   "n8n workflow nodes execute arbitrary JavaScript and shell commands. Write access = unrestricted code execution. No CVE; this is intended behavior.",
+					Severity: "critical",
+				})
+			}
+		} else if st == 401 || st == 403 {
+			r.AuthStatus = fmt.Sprintf("required (HTTP %d)", st)
+		}
+	}
+
+	// Credentials endpoint — provider API keys stored in n8n
+	if st, _, body, err := httpGET(c, b+"/rest/credentials"); err == nil && st == 200 {
+		r.AuthStatus = "none"
+		if m, err := parseJSON(body); err == nil {
+			creds := jArray(m, "data")
+			if len(creds) > 0 {
+				r.Findings = append(r.Findings, Finding{
+					Category: "credentials",
+					Title:    fmt.Sprintf("%d stored credentials accessible — provider API keys exposed", len(creds)),
+					Severity: "critical",
+				})
+			}
+		}
+	}
+
+	return r
+}
+
+func enumTTS(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "none"
+
+	// Service info from root
+	if st, _, body, err := httpGET(c, b+"/"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			if name := jStr(m, "name"); name != "" {
+				r.Details = append(r.Details, "Server: "+name)
+			}
+			if model := jStr(m, "model"); model != "" {
+				r.Version = model
+				r.Details = append(r.Details, "Model: "+model)
+			}
+		}
+	}
+
+	// Voice list
+	if st, _, body, err := httpGET(c, b+"/v1/audio/voices"); err == nil && st == 200 {
+		if arr, err := parseJSONArray(body); err == nil {
+			r.Details = append(r.Details, fmt.Sprintf("Voices available: %d", len(arr)))
+		} else if m, err := parseJSON(body); err == nil {
+			voices := jArray(m, "voices")
+			r.Details = append(r.Details, fmt.Sprintf("Voices available: %d", len(voices)))
+		}
+	}
+
+	r.Findings = append(r.Findings, Finding{
+		Category: "exposure",
+		Title:    "AI TTS server unauthenticated — /v1/audio/speech open",
+		Detail:   "OpenAI-compatible TTS endpoint accessible without credentials. Attacker can generate arbitrary speech, consume compute, potentially abuse voice cloning if enabled.",
+		Severity: "medium",
+	})
+	return r
+}
+
+func enumSGLang(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "none"
+
+	// Model info — SGLang-specific endpoint
+	if st, _, body, err := httpGET(c, b+"/get_model_info"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			if v := jStr(m, "model_path"); v != "" {
+				r.Details = append(r.Details, "Model: "+v)
+				r.Version = v
+			}
+			if v := jStr(m, "is_generation"); v != "" {
+				r.Details = append(r.Details, "Generation mode: "+v)
+			}
+		}
+	}
+
+	// OpenAI-compat model list
+	if st, _, body, err := httpGET(c, b+"/v1/models"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			models := jArray(m, "data")
+			r.Details = append(r.Details, fmt.Sprintf("Models served: %d", len(models)))
+			for _, mdl := range models {
+				if mm, ok := mdl.(map[string]interface{}); ok {
+					if id, ok := mm["id"].(string); ok {
+						r.Details = append(r.Details, "  - "+id)
+					}
+				}
+			}
+		}
+	}
+
+	// Server info
+	if st, _, body, err := httpGET(c, b+"/get_server_info"); err == nil && st == 200 {
+		r.RawData["server_info"] = json.RawMessage(body)
+	}
+
+	if r.AuthStatus == "none" {
+		r.Findings = append(r.Findings, Finding{
+			Category: "exposure",
+			Title:    "SGLang inference server unauthenticated",
+			Detail:   "Full model inference available without credentials. Attacker can enumerate loaded models, run arbitrary prompts, and consume compute.",
+			Severity: "high",
+		})
+	}
+	return r
+}
+
+func enumVLLM(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+
+	if st, _, body, err := httpGET(c, b+"/v1/models"); err == nil {
+		if st == 200 {
+			r.AuthStatus = "none"
+			if m, err := parseJSON(body); err == nil {
+				models := jArray(m, "data")
+				r.Details = append(r.Details, fmt.Sprintf("Models served: %d", len(models)))
+				for _, mdl := range models {
+					if mm, ok := mdl.(map[string]interface{}); ok {
+						if id, ok := mm["id"].(string); ok {
+							r.Details = append(r.Details, "  - "+id)
+						}
+					}
+				}
+			}
+			r.Findings = append(r.Findings, Finding{
+				Category: "exposure",
+				Title:    "vLLM OpenAI-compatible API unauthenticated",
+				Detail:   "Full inference access without credentials. /v1/completions and /v1/chat/completions accessible.",
+				Severity: "high",
+			})
+		} else if st == 401 || st == 403 {
+			r.AuthStatus = fmt.Sprintf("required (HTTP %d)", st)
+		}
+	}
+
+	// Check completions endpoint directly
+	if st, _, _, err := httpGET(c, b+"/v1/completions"); err == nil && st != 404 {
+		r.Details = append(r.Details, fmt.Sprintf("/v1/completions → HTTP %d", st))
+	}
+	return r
+}
+
+// ── Open Directory ──────────────────────────────────────────────────
+
+func enumOpenDirectory(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "none"
+
+	if st, _, body, err := httpGET(c, b+"/"); err == nil && st == 200 {
+		bodyStr := string(body)
+
+		// Count entries in directory listing
+		entries := strings.Count(bodyStr, "<li>") + strings.Count(bodyStr, `href="`)
+		if entries > 2 {
+			r.Details = append(r.Details, fmt.Sprintf("~%d entries visible", entries/2))
+		}
+
+		// Scan for high-value filenames/paths
+		highValue := []struct {
+			needle   string
+			severity string
+			title    string
+		}{
+			{".env", "critical", ".env file exposed — may contain credentials"},
+			{"docker-compose", "high", "docker-compose file exposed — reveals service topology"},
+			{".ssh/", "critical", "SSH directory exposed"},
+			{"id_rsa", "critical", "SSH private key exposed"},
+			{"credentials", "critical", "Credentials file exposed"},
+			{".claude/", "high", "Claude AI config directory exposed (.claude/)"},
+			{".openhands/", "high", "OpenHands AI agent config exposed (.openhands/)"},
+			{"CLAUDE.md", "high", "CLAUDE.md instructions file exposed — may contain sensitive directives"},
+			{"api_key", "critical", "API key file exposed"},
+			{"secret", "high", "Secret file exposed"},
+			{"backup", "medium", "Backup file/directory exposed"},
+			{".git/", "high", ".git directory exposed — full source history accessible"},
+			{"Dockerfile", "medium", "Dockerfile exposed — reveals build environment"},
+			{"requirements.txt", "low", "Python requirements file exposed"},
+			{"package.json", "low", "Node.js package manifest exposed"},
+		}
+
+		for _, hv := range highValue {
+			if strings.Contains(strings.ToLower(bodyStr), strings.ToLower(hv.needle)) {
+				r.Findings = append(r.Findings, Finding{
+					Category: "exposure",
+					Title:    hv.title,
+					Detail:   fmt.Sprintf("Filename/path '%s' found in directory listing", hv.needle),
+					Severity: hv.severity,
+				})
+			}
+		}
+
+		scanSecrets(bodyStr, &r)
+	}
+
+	r.Findings = append(r.Findings, Finding{
+		Category: "access",
+		Title:    "Unauthenticated directory listing — full filesystem tree browsable",
+		Detail:   "Server serving files with no authentication; all listed contents are downloadable.",
+		Severity: "high",
+	})
+
+	return r
+}
+
+// ── OpenHands ───────────────────────────────────────────────────────
+
+func enumOpenHands(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+
+	// Detect admin console vs. regular UI
+	if st, _, body, err := httpGET(c, b+"/"); err == nil && st == 200 {
+		if strings.Contains(strings.ToLower(string(body)), "admin console") {
+			r.Details = append(r.Details, "Variant: Admin Console")
+			r.Findings = append(r.Findings, Finding{
+				Category: "access",
+				Title:    "OpenHands Admin Console — unclaimed setup wizard accessible",
+				Detail:   "First visitor can configure the admin account with no prior credentials.",
+				Severity: "critical",
+			})
+			r.AuthStatus = "none"
+		}
+	}
+
+	// Try settings/config API — unauthenticated on default installs
+	if st, _, body, err := httpGET(c, b+"/api/v1/settings"); err == nil && st == 200 {
+		r.AuthStatus = "none"
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["settings"] = m
+		}
+		r.Findings = append(r.Findings, Finding{
+			Category: "access",
+			Title:    "OpenHands /api/v1/settings accessible without authentication",
+			Severity: "critical",
+		})
+	} else if r.AuthStatus == "unknown" {
+		if st == 401 || st == 403 {
+			r.AuthStatus = "auth required"
+		}
+	}
+
+	// Pull agent list
+	if st, _, body, err := httpGET(c, b+"/api/v1/agents"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			if agents := jArray(m, "agents"); agents != nil {
+				r.Details = append(r.Details, fmt.Sprintf("Agents available: %d", len(agents)))
+			}
+		}
+	}
+
+	return r
+}
+
+// ── Mem0 ────────────────────────────────────────────────────────────
+
+func enumMem0(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+
+	// Pull OpenAPI spec for version
+	if st, _, body, err := httpGET(c, b+"/openapi.json"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			if info := jMap(m, "info"); info != nil {
+				r.Version = jStr(info, "version")
+			}
+			r.RawData["openapi"] = m
+		}
+	}
+
+	// Probe memory endpoint — Mem0 default requires Authorization: Token <key>
+	if st, _, body, err := httpGET(c, b+"/v1/memories?user_id=test"); err == nil {
+		switch st {
+		case 200:
+			r.AuthStatus = "none"
+			count := 0
+			if m, err := parseJSON(body); err == nil {
+				if arr := jArray(m, "memories"); arr != nil {
+					count = len(arr)
+				}
+			}
+			r.Findings = append(r.Findings, Finding{
+				Category: "access",
+				Title:    fmt.Sprintf("Mem0 /v1/memories unauthenticated — %d entries accessible", count),
+				Detail:   "AI agent memory store readable without API key; may contain conversation history, user PII, or agent state.",
+				Severity: "critical",
+			})
+		case 401, 403:
+			r.AuthStatus = "auth required"
+		default:
+			r.AuthStatus = "unknown"
+		}
+	}
+
+	// Check /v1/users for user enumeration
+	if st, _, body, err := httpGET(c, b+"/v1/users"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			if users := jArray(m, "users"); users != nil {
+				r.Details = append(r.Details, fmt.Sprintf("Users in memory store: %d", len(users)))
+			}
+		}
+		_ = body
+	}
+
+	return r
+}
+
+// ── Coolify ─────────────────────────────────────────────────────────
+
+func enumCoolify(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+
+	// Coolify returns JSON 401 {"message":"Unauthenticated."} for API clients.
+	// A 200 at /api/v1/settings would mean auth is disabled (extremely unusual).
+	if st, _, body, err := httpGET(c, b+"/api/v1/settings"); err == nil {
+		switch st {
+		case 200:
+			if m, err := parseJSON(body); err == nil {
+				r.RawData["settings"] = m
+				if jStr(m, "registration_enabled") == "true" {
+					r.AuthStatus = "open registration"
+					r.Findings = append(r.Findings, Finding{
+						Category: "access",
+						Title:    "Coolify open registration — anyone can create an admin account",
+						Severity: "high",
+					})
+				} else {
+					r.AuthStatus = "auth required"
+				}
+			}
+		case 401, 403:
+			r.AuthStatus = "auth required"
+		}
+	}
+
+	// Check if registration is open on the login page (HTML mode, no JSON Accept)
+	if st, _, body, err := httpGET(c, b+"/login"); err == nil && st == 200 {
+		bodyStr := strings.ToLower(string(body))
+		if strings.Contains(bodyStr, "register") && !strings.Contains(bodyStr, "disabled") {
+			r.AuthStatus = "open registration"
+			r.Findings = append(r.Findings, Finding{
+				Category: "access",
+				Title:    "Coolify self-registration enabled — public account creation allowed",
+				Severity: "high",
+			})
+		} else if r.AuthStatus == "unknown" {
+			r.AuthStatus = "auth required"
+		}
+	}
+
+	return r
+}
+
+// ── Clawdbot ─────────────────────────────────────────────────────────
+
+func enumClawdbot(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+
+	// Extract assistant name and avatar from the SPA index HTML
+	if st, _, body, err := httpGET(c, b+"/"); err == nil && st == 200 {
+		bodyStr := string(body)
+		if idx := strings.Index(bodyStr, `__CLAWDBOT_ASSISTANT_NAME__="`); idx >= 0 {
+			rest := bodyStr[idx+len(`__CLAWDBOT_ASSISTANT_NAME__="`):]
+			if end := strings.IndexByte(rest, '"'); end > 0 {
+				r.Details = append(r.Details, "Assistant name: "+rest[:end])
+			}
+		}
+		if idx := strings.Index(bodyStr, `__CLAWDBOT_ASSISTANT_AVATAR__="`); idx >= 0 {
+			rest := bodyStr[idx+len(`__CLAWDBOT_ASSISTANT_AVATAR__="`):]
+			if end := strings.IndexByte(rest, '"'); end > 0 {
+				r.Details = append(r.Details, "Avatar: "+rest[:end])
+			}
+		}
+	}
+
+	// Probe the WebSocket gateway — the SPA is a catch-all so HTTP paths are
+	// useless for auth detection; the real backend is a WS gateway.
+	useTLS := strings.HasPrefix(svc.BaseURL, "https://")
+	authStatus, wsDetail := clawdbotWSProbe(svc.Host, svc.Port, useTLS, 6*time.Second)
+	r.AuthStatus = authStatus
+	if wsDetail != "" {
+		r.Details = append(r.Details, wsDetail)
+	}
+
+	switch authStatus {
+	case "none":
+		r.Findings = append(r.Findings, Finding{
+			Category: "access",
+			Title:    "Clawdbot gateway accessible without authentication",
+			Detail:   "WebSocket gateway accepts connections without a valid token.",
+			Severity: "critical",
+		})
+	case "token required":
+		// Expected secure state — gateway requires pre-issued token
+	}
+
+	r.Findings = append(r.Findings, Finding{
+		Category: "exposure",
+		Title:    "Clawdbot Control UI exposed to internet",
+		Detail:   "OpenClaw management interface accessible publicly; intended for Tailscale/VPN-only access.",
+		Severity: "medium",
+	})
+	r.Findings = append(r.Findings, checkGeneric(c, svc)...)
+	return r
+}
+
+// clawdbotWSProbe performs a minimal WebSocket handshake and connect probe
+// to determine the Clawdbot gateway auth posture without external dependencies.
+func clawdbotWSProbe(host string, port int, useTLS bool, timeout time.Duration) (authStatus, detail string) {
+	addr := fmt.Sprintf("%s:%d", host, port)
+
+	var conn net.Conn
+	var err error
+	if useTLS {
+		conn, err = tls.DialWithDialer(
+			&net.Dialer{Timeout: timeout},
+			"tcp", addr,
+			&tls.Config{InsecureSkipVerify: true},
+		)
+	} else {
+		conn, err = net.DialTimeout("tcp", addr, timeout)
+	}
+	if err != nil {
+		return "unknown", ""
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(timeout))
+
+	// Valid 16-byte base64 key for the WS upgrade handshake.
+	rawKey := base64.StdEncoding.EncodeToString([]byte("clawdbotprobe123"))
+
+	handshake := fmt.Sprintf(
+		"GET / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"+
+			"Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n",
+		addr, rawKey,
+	)
+	if _, err := conn.Write([]byte(handshake)); err != nil {
+		return "unknown", ""
+	}
+
+	// The 101 response and the first WS frame (challenge) often arrive in the
+	// same TCP segment. Read everything available, split on \r\n\r\n.
+	initial := make([]byte, 4096)
+	n, _ := conn.Read(initial)
+	initial = initial[:n]
+
+	sep := []byte("\r\n\r\n")
+	idx := strings.Index(string(initial), "\r\n\r\n")
+	if idx < 0 || !strings.Contains(string(initial[:idx+4]), "101") {
+		return "unknown", ""
+	}
+	_ = sep
+
+	// Bytes after the HTTP headers are the first WS frame(s).
+	buf := newWSBuffer(conn, initial[idx+4:])
+
+	challengeFrame, err := buf.readFrame()
+	if err != nil || !strings.Contains(string(challengeFrame), "connect.challenge") {
+		return "unknown", ""
+	}
+	var challengeMsg struct {
+		Payload struct {
+			Nonce string `json:"nonce"`
+			Ts    int64  `json:"ts"`
+		} `json:"payload"`
+	}
+	json.Unmarshal(challengeFrame, &challengeMsg)
+	nonce := challengeMsg.Payload.Nonce
+
+	// Generate an ephemeral Ed25519 keypair and sign the challenge.
+	// The client-side JS uses Ed25519 (SHA-512 key expansion) matching stdlib.
+	// A fresh unregistered keypair lets us reach the token check, not just schema validation.
+	pubKey, privKey, _ := ed25519.GenerateKey(rand.Reader)
+	pubBytes := []byte(pubKey)
+	devIDBytes := sha256.Sum256(pubBytes)
+	deviceID := fmt.Sprintf("%x", devIDBytes)
+	pubB64 := base64.RawURLEncoding.EncodeToString(pubBytes)
+	signedAt := challengeMsg.Payload.Ts + 1
+	scopes := "operator.admin,operator.approvals,operator.pairing"
+	msgToSign := fmt.Sprintf("v2|%s|clawdbot-control-ui|webchat|operator|%s|%d||%s",
+		deviceID, scopes, signedAt, nonce)
+	sig := ed25519.Sign(privKey, []byte(msgToSign))
+	sigB64 := base64.RawURLEncoding.EncodeToString(sig)
+
+	connectPayload := fmt.Sprintf(
+		`{"type":"req","id":"00000000-0000-0000-0000-000000000001","method":"connect","params":{`+
+			`"minProtocol":3,"maxProtocol":3,`+
+			`"client":{"id":"clawdbot-control-ui","version":"dev","platform":"web","mode":"webchat","instanceId":"probe"},`+
+			`"role":"operator","scopes":["operator.admin","operator.approvals","operator.pairing"],`+
+			`"device":{"id":%q,"publicKey":%q,"signature":%q,"signedAt":%d,"nonce":%q},`+
+			`"caps":[],"auth":{},"userAgent":"aimap/1.0","locale":"en-US"}}`,
+		deviceID, pubB64, sigB64, signedAt, nonce,
+	)
+	if err := wsSendTextFrame(conn, []byte(connectPayload)); err != nil {
+		return "unknown", ""
+	}
+
+	resp, err := buf.readFrame()
+	if err != nil {
+		return "unknown", ""
+	}
+
+	var reply struct {
+		OK    bool `json:"ok"`
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(resp, &reply); err != nil {
+		return "unknown", ""
+	}
+
+	if reply.OK {
+		return "none", "WS gateway: open (no token required)"
+	}
+	msg := reply.Error.Message
+	if strings.Contains(msg, "token missing") || strings.Contains(msg, "unauthorized") {
+		return "token required", "WS gateway: " + truncStr(msg, 60)
+	}
+	return "restricted", "WS gateway: " + truncStr(msg, 60)
+}
+
+// wsBuffer wraps a net.Conn with a pre-read buffer for parsing WS frames.
+type wsBuffer struct {
+	conn net.Conn
+	buf  []byte
+}
+
+func newWSBuffer(conn net.Conn, initial []byte) *wsBuffer {
+	return &wsBuffer{conn: conn, buf: append([]byte(nil), initial...)}
+}
+
+func (w *wsBuffer) read(p []byte) (int, error) {
+	if len(w.buf) >= len(p) {
+		copy(p, w.buf[:len(p)])
+		w.buf = w.buf[len(p):]
+		return len(p), nil
+	}
+	// Drain buffer first, then read from conn
+	n := copy(p, w.buf)
+	w.buf = w.buf[:0]
+	if n < len(p) {
+		m, err := w.conn.Read(p[n:])
+		return n + m, err
+	}
+	return n, nil
+}
+
+func (w *wsBuffer) readN(n int) ([]byte, error) {
+	buf := make([]byte, n)
+	total := 0
+	for total < n {
+		got, err := w.read(buf[total:])
+		total += got
+		if err != nil {
+			return buf[:total], err
+		}
+	}
+	return buf, nil
+}
+
+func (w *wsBuffer) readFrame() ([]byte, error) {
+	hdr, err := w.readN(2)
+	if err != nil {
+		return nil, err
+	}
+	plen := int(hdr[1] & 0x7f)
+	if plen == 126 {
+		ext, err := w.readN(2)
+		if err != nil {
+			return nil, err
+		}
+		plen = int(binary.BigEndian.Uint16(ext))
+	} else if plen == 127 {
+		ext, err := w.readN(8)
+		if err != nil {
+			return nil, err
+		}
+		plen = int(binary.BigEndian.Uint64(ext))
+	}
+	if plen > 64*1024 {
+		plen = 64 * 1024
+	}
+	return w.readN(plen)
+}
+
+// wsSendTextFrame sends a masked WebSocket text frame (client→server must be masked).
+func wsSendTextFrame(conn net.Conn, payload []byte) error {
+	plen := len(payload)
+	var header []byte
+	header = append(header, 0x81) // FIN + text opcode
+	if plen < 126 {
+		header = append(header, byte(0x80|plen))
+	} else {
+		header = append(header, 0x80|126, byte(plen>>8), byte(plen))
+	}
+	// masking key (all zeros for simplicity — valid per RFC 6455)
+	mask := [4]byte{}
+	header = append(header, mask[:]...)
+	frame := append(header, payload...) // mask of 0x00 is a no-op XOR
+	_, err := conn.Write(frame)
+	return err
 }
 
 // ── Generic checks ──────────────────────────────────────────────────
