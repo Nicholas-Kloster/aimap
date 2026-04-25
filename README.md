@@ -21,18 +21,19 @@ Security teams can't secure what they can't see, and AI adoption moves faster th
 
 Generic scanners (`nmap`, `nuclei`) don't identify these as AI services, so they don't show up in the security team's inventory. aimap does.
 
-## What it detects (23 services)
+## What it detects (36 services)
 
 | Category | Services |
 |---|---|
 | Vector databases | Weaviate, ChromaDB, Qdrant, Milvus |
-| LLM runtimes | Ollama, vLLM, LocalAI, text-generation-webui |
+| LLM runtimes | Ollama, vLLM, SGLang, LocalAI, AI TTS Server, text-generation-webui |
 | ML platforms | MLflow, TensorFlow Serving, Triton Inference Server, Ray Serve, Ray Dashboard, Kubeflow |
-| Orchestration / UI | LangServe, Flowise, Dify, Open WebUI, LiteLLM, BentoML |
-| Observability | Langfuse |
-| Notebooks / adjacent | Jupyter Notebook, Docker Registry |
+| Orchestration / UI | LangServe, Flowise, Dify, Open WebUI, SillyTavern, LiteLLM, BentoML |
+| AI agent platforms | OpenHands, Mem0, Coolify, Clawdbot |
+| Observability / infra | Langfuse, Grafana, Prometheus, etcd, MinIO, n8n |
+| Notebooks / dev / adjacent | Jupyter Notebook, Open Directory, Docker Registry |
 
-Each service has a dedicated fingerprint; several also have deep enumerators that surface PII fields, unauthenticated RCE, exposed credentials, and other actionable findings.
+Each service has a dedicated fingerprint. 25 of the 36 services also have dedicated deep enumerators that surface PII fields, unauthenticated RCE, exposed credentials, claimable admin states, and other actionable findings.
 
 ## Companion tool: `aimap-profile`
 
@@ -106,13 +107,13 @@ jq '.enum_results[] | select(.risk_level == "critical")' check.json
 |------|---------|-------------|
 | `-target` | — | Single target (IP, hostname, or CIDR) |
 | `-list` | — | File of targets, one per line (`#` comments supported) |
-| `-ports` | 19-port default set | Comma-separated ports to scan |
+| `-ports` | 26-port default set | Comma-separated ports to scan |
 | `-timeout` | `5s` | Connection timeout |
 | `-threads` | `20` | Concurrent scan threads |
 | `-o` | — | JSON report output file |
 | `-v` | false | Verbose output |
 
-Default port list: `8080,8443,11434,8000,3000,6333,19530,9091,8888,8501,9090,5000,5001,4000,7860,3001,8265,51000,55000`
+Default port list: `80,443,8080,8443,11434,8000,3000,6333,19530,9091,8888,8501,9090,5000,5001,4000,7860,3001,8265,51000,55000,2379,5678,9000,30000,18789`
 
 See `man aimap` (if installed system-wide) for the full reference.
 
