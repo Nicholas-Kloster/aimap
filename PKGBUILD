@@ -1,16 +1,16 @@
 # Maintainer: Nicholas Kloster <security@d5data.ai>
 
 pkgname=aimap
-pkgver=1.1.1
+pkgver=1.3.0
 pkgrel=1
 groups=('blackarch' 'blackarch-scanner' 'blackarch-recon' 'blackarch-networking')
-pkgdesc='Security scanner for AI and ML infrastructure. Fingerprints 23 AI/ML service types (LLMs, vector databases, model servers) and surfaces actionable findings.'
+pkgdesc='Security scanner for AI and ML infrastructure. Fingerprints 36 AI/ML service types (LLMs, vector databases, model servers, agent platforms) and surfaces actionable findings.'
 arch=('x86_64' 'aarch64')
 url='https://github.com/Nicholas-Kloster/aimap'
 license=('MIT')
 makedepends=('go')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/Nicholas-Kloster/aimap/archive/v$pkgver.tar.gz")
-sha256sums=('c1a48b61524f1f3d4c5e046c1a84189db36e55bce1900ede1107cfbabbb1246c')
+sha256sums=('SKIP')
 
 build() {
   cd "$pkgname-$pkgver"

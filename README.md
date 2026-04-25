@@ -33,7 +33,7 @@ Generic scanners (`nmap`, `nuclei`) don't identify these as AI services, so they
 | Observability / infra | Langfuse, Grafana, Prometheus, etcd, MinIO, n8n |
 | Notebooks / dev / adjacent | Jupyter Notebook, Open Directory, Docker Registry |
 
-Each service has a dedicated fingerprint. 25 of the 36 services also have dedicated deep enumerators that surface PII fields, unauthenticated RCE, exposed credentials, claimable admin states, and other actionable findings.
+Each service has a dedicated fingerprint. 26 of the 36 services also have dedicated deep enumerators that surface PII fields, unauthenticated RCE, exposed credentials, claimable admin states, and other actionable findings.
 
 ## Companion tool: `aimap-profile`
 

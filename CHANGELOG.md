@@ -2,6 +2,73 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.3.0] — 2026-04-23
+
+Coverage release. Backward-compatible: no CLI, JSON schema, or existing-fingerprint output changes.
+
+### Added
+
+**Default port list (`-ports`)** — 7 new ports added to the default scan list:
+
+- `80`, `443` — Dify and Coolify defaults; OpenHands installer; many AI services behind reverse proxies
+- `2379` — etcd client port
+- `5678` — n8n
+- `9000` — MinIO API
+- `30000` — SGLang, OpenHands NodePort default
+- `18789` — Clawdbot
+
+**Fingerprints** — 13 new entries (23 → 36 total):
+
+| Service | Ports | Probe | Notes |
+|---------|-------|-------|-------|
+| SGLang | 30000, 8889 | `/get_model_info` + body match | High severity — exposes model_path, runtime args |
+| AI TTS Server | 10087, 8080 | `/v1/audio/voices` | Medium — voice/model enumeration |
+| SillyTavern | 8000, 8001 | `Www-Authenticate: SillyTavern` header | Medium — character roleplay UI; often co-deployed with local LLMs |
+| Grafana | 3000 | `/api/health` | Medium — DB status disclosure |
+| Prometheus | 9090 | `/-/healthy` + `/api/v1/status/runtimeinfo` | Medium — metrics exposure |
+| etcd | 2379 | `/health` + `/version` | Critical — Kubernetes/orchestration secret store |
+| MinIO | 9000 | `/` AccessDenied XML + `/minio/health/live` | High — S3-compatible object store, often unauthenticated |
+| n8n | 5678 | `/rest/active-workflows` | Critical — workflow orchestration with embedded credentials |
+| OpenHands | 3000, 30000 | `<title>OpenHands</title>` + admin console body | Critical — autonomous agent platform |
+| Mem0 | 8888 | `/docs` "Mem0 REST APIs" | High — agent memory store with PII |
+| Coolify | 8000, 443 | `coolify_session` Set-Cookie | Low — self-hosted PaaS |
+| Clawdbot | 18789, 443, 80 | `clawdbot-app` body | Medium |
+| Open Directory | 9090, 8080, 8000, 4000 | "Directory listing for" / "Index of /" | High — Python http.server / nginx autoindex exposure |
+
+**Deep enumerators** — 15 new dedicated enumerators (11 → 26 total):
+
+- **`enumSGLang`** — model path, runtime args, served-model name, fingerprint extraction
+- **`enumTTS`** — voice catalog and model enumeration via `/v1/audio/voices`
+- **`enumVLLM`** — model list via `/v1/models` (previously fingerprint-only)
+- **`enumOpenWebUI`** — auth posture, signup-open detection, environment leak via `/api/config`
+- **`enumSillyTavern`** — basic-auth realm fingerprint, version probe
+- **`enumGrafana`** — anonymous-access detection, version disclosure, snapshot enumeration
+- **`enumPrometheus`** — anonymous query API, target enumeration, runtime info
+- **`enumEtcd`** — anonymous v2/v3 access detection, member list, key enumeration without auth
+- **`enumMinIO`** — bucket enumeration, anonymous access, server-info disclosure
+- **`enumN8n`** — workflow enumeration, credential count, executions list
+- **`enumOpenDirectory`** — directory walk + sensitive-filename heuristic (id_rsa, .env, *.pem, backup archives)
+- **`enumOpenHands`** — admin console claim state, conversation history readability, agent runtime info
+- **`enumMem0`** — memory enumeration, user/agent isolation check, PII detection in memory contents
+- **`enumCoolify`** — installer claim state, server registration check
+- **`enumClawdbot`** — version + auth fingerprint
+
+**New category — AI agent platforms**: OpenHands, Mem0, Coolify, Clawdbot.
+
+**New category — Observability / infra co-deployed with AI stacks**: Grafana, Prometheus, etcd, MinIO, n8n alongside Langfuse.
+
+### Verified
+
+- `go build -o aimap .` — clean
+- `go vet ./...` — clean
+- Banner reports `Fingerprints: 36 AI/ML services`
+
+### Notes
+
+The v1.3.0 commit message says "add Clawdbot fingerprint + enumerator, expand default ports" — that's the visible tip. The full delta also folds in a backlog of partially-staged fingerprints (SGLang, AI TTS, SillyTavern, the observability quintet, the agent-platform quartet, Open Directory) and their enumerators that had accumulated since v1.2.0.
+
+---
+
 ## [v1.2.0] — 2026-04-17
 
 Companion-tool release. No changes to the aimap Go binary, its fingerprint database, CLI flags, or JSON schema.
