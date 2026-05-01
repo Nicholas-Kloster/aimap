@@ -202,6 +202,20 @@ diff <(jq -S '.services' "$PREV") <(jq -S '.services' "$OUT") && \
 
 The JSON schema is stable; findings have consistent `category`, `severity`, and `service` fields. Ingest `enum_results[].findings[]` into Splunk/Elastic/Loki as-is.
 
+## Use with Claude Code
+
+Claude Code can drive aimap scans, parse the JSON output, and chain findings into remediation or exploitation steps without leaving the terminal.
+
+```
+Run `aimap -target 10.0.0.0/24 -threads 50 -o aimap.json`, then parse aimap.json and give me a prioritized summary of every critical and high finding — service name, IP, port, and what's exposed.
+```
+
+```
+I have aimap.json from a scan of my internal network. Cross-reference every AI service found against known CVEs for that service version, flag anything unauthenticated, and draft a one-paragraph executive summary I can paste into a security report.
+```
+
+---
+
 ## Contributing
 
 Bug reports and fingerprint additions welcome via GitHub issues and PRs. When submitting a new fingerprint:
