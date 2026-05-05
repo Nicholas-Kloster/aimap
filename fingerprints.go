@@ -323,9 +323,12 @@ var Fingerprints = []Fingerprint{
 		DefaultPorts: []int{3000},
 		Probes: []Probe{
 			{Path: "/docs.json", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "openapi"},
 				{Type: "body_contains", Value: "bentoml"},
 			}},
-			{Path: "/", Matches: []MatchCond{
+			{Path: "/livez", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
 				{Type: "body_contains", Value: "BentoML"},
 			}},
 		},
@@ -354,6 +357,86 @@ var Fingerprints = []Fingerprint{
 			}},
 			{Path: "/", Matches: []MatchCond{
 				{Type: "body_contains", Value: "Kubeflow"},
+			}},
+		},
+		Severity: "high",
+	},
+
+	// ── Compute orchestration / training tier ──────────────────
+	// All fingerprints in this section follow the conjunctive-match
+	// discipline (status_code + json_field + body_contains, all required)
+	// so probes don't fire on naked single-word substring matches.
+	{
+		Name:         "Apache Spark UI",
+		DefaultPorts: []int{4040, 8080, 18080},
+		Probes: []Probe{
+			{Path: "/api/v1/version", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "spark"},
+			}},
+			{Path: "/api/v1/applications", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_array"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "Apache Airflow",
+		DefaultPorts: []int{8080},
+		Probes: []Probe{
+			{Path: "/api/v1/health", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "metadatabase"},
+				{Type: "json_field", Field: "scheduler"},
+			}},
+			{Path: "/health", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "metadatabase"},
+				{Type: "json_field", Field: "scheduler"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "Dask Dashboard",
+		DefaultPorts: []int{8787},
+		Probes: []Probe{
+			{Path: "/json/identity.json", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "type"},
+				{Type: "json_field", Field: "services"},
+			}},
+		},
+		Severity: "medium",
+	},
+	{
+		Name:         "Prefect",
+		DefaultPorts: []int{4200},
+		Probes: []Probe{
+			{Path: "/api/admin/version", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "version"},
+			}},
+			{Path: "/api/admin/database", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "connection_url"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "Temporal Web",
+		DefaultPorts: []int{8080, 8233},
+		Probes: []Probe{
+			{Path: "/api/v1/cluster-info", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "supportedClients"},
+				{Type: "json_field", Field: "clusterName"},
+			}},
+			{Path: "/api/v1/namespaces", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "namespaces"},
 			}},
 		},
 		Severity: "high",
