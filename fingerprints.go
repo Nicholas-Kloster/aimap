@@ -482,6 +482,122 @@ var Fingerprints = []Fingerprint{
 		Severity: "medium",
 	},
 
+	// ── AI safety / eval / guardrails ───────────────────────────
+	// All fingerprints in this section combine status_code + JSON shape +
+	// distinctive keyword (conjunctive). Single-word body_contains is
+	// disallowed — it produced FPs at population scale (Clipface ≠ Garak,
+	// LiveChat ≠ DeepEval, EDocs ≠ DeepEval — see ai-safety-eval-cloud-survey
+	// methodology correction 2026-05-05).
+	{
+		Name:         "Promptfoo",
+		DefaultPorts: []int{15500, 5000, 3000},
+		Probes: []Probe{
+			{Path: "/api/health", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "status"},
+				{Type: "body_contains", Value: "promptfoo"},
+			}},
+			{Path: "/api/eval", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_array"},
+			}},
+		},
+		Severity: "medium",
+	},
+	{
+		Name:         "NeMo Guardrails",
+		DefaultPorts: []int{8000, 8080},
+		Probes: []Probe{
+			{Path: "/v1/rails/configs", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_array"},
+			}},
+			{Path: "/openapi.json", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "/v1/rails/configs"},
+				{Type: "body_contains", Value: "openapi"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "DeepEval Server",
+		DefaultPorts: []int{5000, 8000, 8080},
+		Probes: []Probe{
+			{Path: "/api/health", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "service"},
+				{Type: "body_contains", Value: "deepeval"},
+			}},
+			{Path: "/api/v1/evaluations", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_array"},
+			}},
+		},
+		Severity: "medium",
+	},
+	{
+		Name:         "LangSmith Self-Hosted",
+		DefaultPorts: []int{1984, 8080},
+		Probes: []Probe{
+			{Path: "/info", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "instance_flags"},
+			}},
+			{Path: "/api/v1/info", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "version"},
+				{Type: "body_contains", Value: "langsmith"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "Inspect AI",
+		DefaultPorts: []int{7575, 7576, 8080},
+		Probes: []Probe{
+			{Path: "/api/logs", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_array"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "body_contains", Value: "<title>inspect"},
+				{Type: "body_contains", Value: "log_dir"},
+			}},
+		},
+		Severity: "medium",
+	},
+	{
+		Name:         "Garak REST",
+		DefaultPorts: []int{5000, 8000, 8080},
+		Probes: []Probe{
+			{Path: "/api/v1/garak/version", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "garak_version"},
+			}},
+			{Path: "/probes", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "probes"},
+				{Type: "body_contains", Value: "garak"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "Lakera Guard Self-Hosted",
+		DefaultPorts: []int{8000, 8080},
+		Probes: []Probe{
+			{Path: "/v1/guard", Matches: []MatchCond{
+				{Type: "header_contains", Field: "Server", Value: "lakera"},
+			}},
+			{Path: "/api/v1/guards", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "guards"},
+			}},
+		},
+		Severity: "high",
+	},
+
 	// ── Exposed file servers ────────────────────────────────────
 	{
 		Name:         "Open Directory",

@@ -162,6 +162,14 @@ func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool
 			result = enumVLLM(client, svc)
 		case "AI TTS Server":
 			result = enumTTS(client, svc)
+		case "Promptfoo":
+			result = enumPromptfoo(client, svc)
+		case "NeMo Guardrails":
+			result = enumNeMoGuardrails(client, svc)
+		case "DeepEval Server":
+			result = enumDeepEval(client, svc)
+		case "LangSmith Self-Hosted":
+			result = enumLangSmith(client, svc)
 		default:
 			result = mkResult(svc)
 		}
@@ -1867,6 +1875,184 @@ func wsSendTextFrame(conn net.Conn, payload []byte) error {
 	frame := append(header, payload...) // mask of 0x00 is a no-op XOR
 	_, err := conn.Write(frame)
 	return err
+}
+
+// ── Promptfoo ───────────────────────────────────────────────────────
+
+func enumPromptfoo(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "unknown"
+
+	if st, _, body, err := httpGET(c, b+"/api/health"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.Version = jStr(m, "version")
+			r.RawData["health"] = m
+		}
+	}
+
+	// Promptfoo is a red-team / eval framework. The eval-history is the
+	// operator's curated jailbreak/probe corpus — disclosure is direct
+	// competitor intelligence + ammunition for the same probes against
+	// other operators.
+	if st, _, body, err := httpGET(c, b+"/api/eval"); err == nil {
+		if st == 200 {
+			r.AuthStatus = "none"
+			if arr, err := parseJSONArray(body); err == nil {
+				r.RawData["eval_count"] = len(arr)
+				r.Details = append(r.Details, fmt.Sprintf("Eval runs: %d", len(arr)))
+				if len(arr) > 0 {
+					r.Findings = append(r.Findings, Finding{
+						Category: "data", Title: "Promptfoo eval history readable without auth",
+						Detail:   "Operator's red-team / eval-run history is enumerable. Contains the prompts being tested, target models, and pass/fail per probe. Direct competitor intelligence for adversarial-AI work.",
+						Severity: "high",
+					})
+				}
+			}
+		} else if st == 401 || st == 403 {
+			r.AuthStatus = fmt.Sprintf("required (HTTP %d)", st)
+		}
+	}
+
+	if st, _, body, err := httpGET(c, b+"/api/results"); err == nil && st == 200 {
+		if arr, err := parseJSONArray(body); err == nil && len(arr) > 0 {
+			r.RawData["results_count"] = len(arr)
+		}
+	}
+
+	r.Findings = append(r.Findings, Finding{
+		Category: "context", Title: "Promptfoo stores red-team / eval history",
+		Detail:   "This service contains adversarial-prompt corpora and per-model robustness scores. Misconfigurations leak the operator's attack-research corpus.",
+		Severity: "info",
+	})
+
+	return r
+}
+
+// ── NeMo Guardrails ─────────────────────────────────────────────────
+
+func enumNeMoGuardrails(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "unknown"
+
+	if st, _, body, err := httpGET(c, b+"/v1/rails/configs"); err == nil {
+		if st == 200 {
+			r.AuthStatus = "none"
+			if arr, err := parseJSONArray(body); err == nil {
+				r.RawData["configs"] = arr
+				r.Details = append(r.Details, fmt.Sprintf("Rails configs: %d", len(arr)))
+				if len(arr) > 0 {
+					r.Findings = append(r.Findings, Finding{
+						Category: "data", Title: "NeMo Guardrails configs enumerable",
+						Detail:   "Operator's safety policy is readable. An attacker can fingerprint exactly which rails are enabled (jailbreak / topical / fact-check / hallucination / output-mod) and craft inputs that route around them.",
+						Severity: "high",
+					})
+				}
+			}
+		} else if st == 401 || st == 403 {
+			r.AuthStatus = fmt.Sprintf("required (HTTP %d)", st)
+		}
+	}
+
+	// /v1/chat/completions → if 405 Method Not Allowed, the inference path
+	// is unauth (POST would succeed). If 401/403, auth is enforced.
+	if st, _, _, err := httpGET(c, b+"/v1/chat/completions"); err == nil {
+		if st == 405 {
+			r.Findings = append(r.Findings, Finding{
+				Category: "compute", Title: "Inference endpoint reachable without auth",
+				Detail:   "GET returned 405 Method Not Allowed (POST would be functional). Anyone can drive the guardrail-wrapped LLM and burn operator quota.",
+				Severity: "high",
+			})
+		}
+	}
+
+	return r
+}
+
+// ── DeepEval Server ─────────────────────────────────────────────────
+
+func enumDeepEval(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "unknown"
+
+	if st, _, body, err := httpGET(c, b+"/api/health"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.Version = jStr(m, "version")
+			r.RawData["health"] = m
+		}
+	}
+
+	if st, _, body, err := httpGET(c, b+"/api/v1/evaluations"); err == nil {
+		if st == 200 {
+			r.AuthStatus = "none"
+			if arr, err := parseJSONArray(body); err == nil {
+				r.RawData["evaluations_count"] = len(arr)
+				r.Details = append(r.Details, fmt.Sprintf("Evaluations: %d", len(arr)))
+				if len(arr) > 0 {
+					r.Findings = append(r.Findings, Finding{
+						Category: "data", Title: "DeepEval evaluation results readable without auth",
+						Detail:   "Operator's LLM-app eval corpus is enumerable. Contains test cases, target prompts, model IDs, and pass/fail metrics — proprietary QA data.",
+						Severity: "high",
+					})
+				}
+			}
+		} else if st == 401 || st == 403 {
+			r.AuthStatus = fmt.Sprintf("required (HTTP %d)", st)
+		}
+	}
+
+	return r
+}
+
+// ── LangSmith Self-Hosted ───────────────────────────────────────────
+
+func enumLangSmith(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "unknown"
+
+	if st, _, body, err := httpGET(c, b+"/info"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.Version = jStr(m, "version")
+			r.RawData["info"] = m
+			if flags, ok := m["instance_flags"].(map[string]interface{}); ok {
+				if v, ok := flags["organization_creation_disabled"].(bool); ok && !v {
+					r.Findings = append(r.Findings, Finding{
+						Category: "access", Title: "LangSmith organization-creation is open",
+						Detail:   "instance_flags.organization_creation_disabled=false. New orgs can be self-registered, which on a self-hosted deployment is usually unintended (defaults to disabled in production configs).",
+						Severity: "medium",
+					})
+				}
+			}
+		}
+	}
+
+	if st, _, body, err := httpGET(c, b+"/api/v1/projects"); err == nil {
+		if st == 200 {
+			r.AuthStatus = "none"
+			if arr, err := parseJSONArray(body); err == nil {
+				r.RawData["project_count"] = len(arr)
+				r.Details = append(r.Details, fmt.Sprintf("Projects: %d", len(arr)))
+				r.Findings = append(r.Findings, Finding{
+					Category: "data", Title: "LangSmith projects + traces accessible without auth",
+					Detail:   "Project list and trace history are enumerable. Traces contain full prompt/response pairs, system prompts, tool-call inputs, and sometimes embedded credentials in tool outputs.",
+					Severity: "critical",
+				})
+			}
+		} else if st == 401 || st == 403 {
+			r.AuthStatus = fmt.Sprintf("required (HTTP %d)", st)
+		}
+	}
+
+	r.Findings = append(r.Findings, Finding{
+		Category: "context", Title: "LangSmith stores LLM trace data",
+		Detail:   "This service contains full prompt/response history. Misconfigurations leak production conversation data.",
+		Severity: "info",
+	})
+
+	return r
 }
 
 // ── Generic checks ──────────────────────────────────────────────────
