@@ -229,9 +229,11 @@ Bug reports and fingerprint additions welcome via GitHub issues and PRs. When su
 
 MIT. See [LICENSE](LICENSE).
 
-## Author
+## About
 
-Nicholas Kloster ([NuClide](https://github.com/Nicholas-Kloster))
+Maintained by **[Nicholas Michael Kloster](https://github.com/Nicholas-Kloster)** as part of [**NuClide**](https://nuclide-research.com) — independent AI infrastructure security research.
+
+CISA disclosures: [CVE-2025-4364](https://nvd.nist.gov/vuln/detail/CVE-2025-4364) · [ICSA-25-140-11](https://www.cisa.gov/news-events/ics-advisories/icsa-25-140-11)
 
 ## Acknowledgments
 
