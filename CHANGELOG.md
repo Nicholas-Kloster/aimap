@@ -2,6 +2,33 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.5.0] — 2026-05-05
+
+Specialty data layers — analytic / OLAP / NoSQL tier. Backward-compatible: no CLI, JSON schema, or existing-fingerprint output changes.
+
+### Added
+
+**Fingerprints** — 3 new entries (50 → 53 total):
+
+| Service | Ports | Probe | Notes |
+|---------|-------|-------|-------|
+| ClickHouse | 8123, 8443, 9091 | `GET /ping` (status 200 + body `Ok.` + `X-Clickhouse-Server-Display-Name` header present) AND `GET /?query=SELECT+1` (status 200 + `X-Clickhouse-Format` header) | High — OLAP query access; sometimes including AI training datasets, model registries, or feature stores |
+| Apache Pinot Controller | 9000 | `GET /cluster/info` (status 200 + json fields `clusterName` + `controllerHost`) AND `GET /tables` (status 200 + json field `tables`) | High — real-time analytics; tables/schema/segments/instance enumeration |
+| ScyllaDB REST | 10000 | `GET /api-doc/` (status 200 + json field `apis` + body contains `storage_service`) | High — distributed NoSQL admin API; cluster topology, keyspaces, tables, sometimes AI feature stores |
+
+### Methodology context
+
+This release closes the Specialty data layers tier in [`FUTURE-SURVEYS.md`](https://github.com/Nicholas-Kloster/AI-LLM-Infrastructure-OSINT/blob/main/case-studies/commercial/FUTURE-SURVEYS.md). Cassandra CQL native protocol on port 9042 is **not** added to aimap — the CQL handshake is binary, not HTTP, and a proper protocol-strict OPTIONS-frame banner check belongs in the survey runbook (`data/specialty-data-layers-discovery-runbook.sh` in the OSINT repo). Adding tcp_send / binary_frame match types to aimap is a separate hardening pass, not blocking for this survey.
+
+Port 9000 is collision-prone (ClickHouse native TCP, MinIO API, Pinot broker default, Whisper, etc.). The Apache Pinot Controller fingerprint discriminates via the conjunctive `clusterName` + `controllerHost` JSON field requirement — neither field appears on collision-class services.
+
+Port 10000 collides with Webmin and miscellaneous management UIs; the ScyllaDB REST fingerprint discriminates via the `/api-doc/` Swagger-1.2 shape with `apis` array + the distinctive `storage_service` resource path.
+
+### Notes for fingerprint authors
+
+- Go's `net/http` canonicalizes `x-clickhouse-server-display-name` → `X-Clickhouse-Server-Display-Name`. Use canonical case for any new `header_contains` matchers.
+- `header_contains` with `Value: ""` matches "header is present at all" (Go's `strings.Contains(s, "")` is always true). This is the idiomatic "header exists" check.
+
 ## [v1.4.0] — 2026-05-05
 
 Specialty data layers — DuckDB-backed APIs. Backward-compatible: no CLI, JSON schema, or existing-fingerprint output changes.

@@ -698,6 +698,62 @@ var Fingerprints = []Fingerprint{
 		Severity: "high",
 	},
 
+	// ── Specialty data layers — analytic / OLAP / NoSQL ─────────
+	// Catalogued in case-studies/commercial/FUTURE-SURVEYS.md as
+	// "Specialty data layers". All conjunctive: a server-issued header
+	// or JSON field anchors the keyword match, no naked body_contains.
+	{
+		Name:         "ClickHouse",
+		DefaultPorts: []int{8123, 8443, 9091},
+		Probes: []Probe{
+			// /ping returns "Ok.\n" with X-ClickHouse-* headers always present.
+			// header_contains with empty Value matches "header exists at all".
+			{Path: "/ping", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "ok."},
+				{Type: "header_contains", Field: "X-Clickhouse-Server-Display-Name", Value: ""},
+			}},
+			// /?query=SELECT+1 returns "1\n" with the same X-ClickHouse-* headers.
+			{Path: "/?query=SELECT+1", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "header_contains", Field: "X-Clickhouse-Format", Value: ""},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "Apache Pinot Controller",
+		DefaultPorts: []int{9000},
+		Probes: []Probe{
+			// /cluster/info returns canonical Pinot controller JSON.
+			{Path: "/cluster/info", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "clusterName"},
+				{Type: "json_field", Field: "controllerHost"},
+			}},
+			// /tables list — Pinot-specific structure {"tables":[...]}
+			{Path: "/tables", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "tables"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "ScyllaDB REST",
+		DefaultPorts: []int{10000},
+		Probes: []Probe{
+			// /api-doc/ returns Swagger 1.2 JSON listing storage_service / system / etc resources.
+			// body_contains anchored by both json_field and the distinctive "storage_service" path.
+			{Path: "/api-doc/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "apis"},
+				{Type: "body_contains", Value: "storage_service"},
+			}},
+		},
+		Severity: "high",
+	},
+
 	// ── Specialty data layers — DuckDB-backed APIs ──────────────
 	// Discovered via Shodan `DuckDB-HTTP` facet 2026-05-05. The facet itself
 	// is substring-noisy (38% of hits are a single SaaS operator's CSP
