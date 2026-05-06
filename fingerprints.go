@@ -698,6 +698,48 @@ var Fingerprints = []Fingerprint{
 		Severity: "high",
 	},
 
+	// ── Specialty data layers — DuckDB-backed APIs ──────────────
+	// Discovered via Shodan `DuckDB-HTTP` facet 2026-05-05. The facet itself
+	// is substring-noisy (38% of hits are a single SaaS operator's CSP
+	// whitelist mentioning @duckdb/duckdb-wasm CDN URL — browser-side WASM,
+	// not server-side DuckDB). Conjunctive matching anchors on structured
+	// product banners, not the keyword.
+	{
+		Name:         "Amulet Scan DuckDB API",
+		DefaultPorts: []int{3001, 3000, 8000},
+		Probes: []Probe{
+			// JSON banner at root: {"name":"Amulet Scan DuckDB API","version":"...","mode":"read-only",
+			//                       "endpoints":["GET /health",...,"POST /refresh-views"],
+			//                       "dataPath":"/var/lib/ledger_raw/raw"}
+			// Canton Network (Daml DLT) ledger-explorer backend; surface includes
+			// admin endpoints (POST /refresh-views, GET /health/config, /backfill/*).
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "name"},
+				{Type: "json_field", Field: "endpoints"},
+				{Type: "body_contains", Value: "amulet scan"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "Definite.app DuckDB",
+		DefaultPorts: []int{80, 443, 3000, 8000},
+		Probes: []Probe{
+			// Two operational headers together — x-backend-hostname leaks the K8s
+			// pod name (duckdb-deployment-* in prod, duckdb-staging-deployment-* in
+			// staging) + x-server-version is YYYY.MMDD.0 (git ...) date-versioned.
+			// Conjunctive header_contains beats body matching since body is often
+			// 2 bytes ("OK").
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "header_contains", Field: "X-Backend-Hostname", Value: "duckdb-"},
+				{Type: "header_contains", Field: "X-Server-Version", Value: "(git "},
+			}},
+		},
+		Severity: "high",
+	},
+
 	// ── Adjacent (non-AI, noted for defender handoff) ───────────
 	// Docker Registry is not an AI service, but often co-deployed with
 	// AI stacks. Defender should hand off to nuclide-registry-recon.

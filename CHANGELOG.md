@@ -2,6 +2,27 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.4.0] — 2026-05-05
+
+Specialty data layers — DuckDB-backed APIs. Backward-compatible: no CLI, JSON schema, or existing-fingerprint output changes.
+
+### Added
+
+**Fingerprints** — 2 new entries (48 → 50 total):
+
+| Service | Ports | Probe | Notes |
+|---------|-------|-------|-------|
+| Amulet Scan DuckDB API | 3001, 3000, 8000 | `GET /` JSON banner: `name`, `endpoints`, body contains `amulet scan` | High — Canton Network (Daml DLT) ledger-explorer backend; banner-declared admin endpoints (`POST /refresh-views`, `GET /health/config`, `/backfill/*`) |
+| Definite.app DuckDB | 80, 443, 3000, 8000 | `GET /` operational headers: `X-Backend-Hostname` contains `duckdb-`, `X-Server-Version` contains `(git ` | High — YC-backed "DuckDB as a Service"; pod-name leak in header (`duckdb-deployment-*` prod / `duckdb-staging-deployment-*` staging) |
+
+### Methodology context
+
+Both fingerprints were derived during NuClide's `DuckDB-HTTP` Shodan-facet bucketing exercise (2026-05-05). The facet itself is substring-noisy at population scale — 38% of global facet hits are a single SaaS operator's K8s ingress fleet whose CSP `script-src` whitelists a `@duckdb/duckdb-wasm` CDN URL (browser-side WASM, not server-side DuckDB). Conjunctive matching anchors on **structured product banners** (JSON `name` field, operational headers in canonical case), not the keyword. Same lesson class as session-9's Garak/DeepEval substring-FP correction, with Shodan as the matcher.
+
+### Notes for fingerprint authors
+
+- Go's `net/http` canonicalizes header names (`x-backend-hostname` on the wire → `X-Backend-Hostname` in `resp.Header`). Existing fingerprints (`Server`, `Docker-Distribution-Api-Version`) already use canonical case; new `header_contains` matchers should follow the same convention. Case-insensitive header lookup is a separate hardening pass not done in this release.
+
 ## [v1.3.0] — 2026-04-23
 
 Coverage release. Backward-compatible: no CLI, JSON schema, or existing-fingerprint output changes.
