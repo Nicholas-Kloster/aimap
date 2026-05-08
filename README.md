@@ -23,7 +23,7 @@ Security teams can't secure what they can't see, and AI adoption moves faster th
 
 Generic scanners (`nmap`, `nuclei`) don't identify these as AI services, so they don't show up in the security team's inventory. aimap does.
 
-## What it detects (56 services)
+## What it detects (66 services)
 
 | Category | Services |
 |---|---|
@@ -36,9 +36,10 @@ Generic scanners (`nmap`, `nuclei`) don't identify these as AI services, so they
 | Observability / infra | Langfuse, Prometheus, etcd, MinIO, n8n |
 | AI safety / eval | Promptfoo, NeMo Guardrails, DeepEval, LangSmith, Inspect AI, Garak REST, Lakera Guard |
 | Compute orchestration | Ray, Kubeflow, Spark, Airflow, BentoML, ClickHouse, Apache Pinot, ScyllaDB |
+| Voice / Audio AI | Whisper ASR, Coqui XTTS, Piper TTS, RVC Voice Cloning, OpenVoice, ChatTTS, F5-TTS, Pipecat, Vocode, LiveKit Agents |
 | Notebooks / dev / adjacent | Jupyter Notebook, Open Directory, Docker Registry |
 
-Each service has a dedicated fingerprint. 33 of the 56 services also have dedicated deep enumerators that surface PII fields, unauthenticated RCE, exposed credentials, claimable admin states, and other actionable findings.
+Each service has a dedicated fingerprint. 33 of the 66 services also have dedicated deep enumerators that surface PII fields, unauthenticated RCE, exposed credentials, claimable admin states, and other actionable findings.
 
 ## Companion tool: `aimap-profile`
 

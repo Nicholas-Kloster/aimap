@@ -850,6 +850,193 @@ var Fingerprints = []Fingerprint{
 		},
 		Severity: "low",
 	},
+
+	// ── Voice / Audio AI (survey 17) ───────────────────────────────────
+	// These services are typically Tier-A "no auth concept" and skew toward
+	// abuse classes that aren't in the typical CVE corpus: voice-cloning
+	// fraud, transcription-compute theft, real-time-agent abuse.
+
+	// Whisper ASR — broad family covering openai-whisper-asr-webservice,
+	// faster-whisper, whisper.cpp HTTP server. The /v1/audio/transcriptions
+	// endpoint is the OpenAI-compatible discriminator; some servers expose
+	// /asr instead. Multiple probes for full family coverage.
+	{
+		Name:         "Whisper ASR",
+		DefaultPorts: []int{9000, 8080, 7860, 8000},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "openai-whisper-asr-webservice"},
+			}},
+			{Path: "/docs", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "Whisper"},
+				{Type: "body_contains", Value: "/asr"},
+			}},
+			{Path: "/inference", Matches: []MatchCond{
+				{Type: "body_contains", Value: "whisper.cpp"},
+			}},
+		},
+		Severity: "medium",
+	},
+
+	// Coqui XTTS server — /api/tts is the inference endpoint;
+	// /api/tts/speakers lists configured voices including any cloned ones.
+	// Hardened by status_code + body_contains on the speaker-listing endpoint
+	// to avoid colliding with random "tts" hits in marketing copy.
+	{
+		Name:         "Coqui XTTS",
+		DefaultPorts: []int{8020, 5002, 8000},
+		Probes: []Probe{
+			{Path: "/api/tts/speakers", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "speaker"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "XTTS"},
+				{Type: "body_contains", Value: "coqui"},
+			}},
+		},
+		Severity: "medium",
+	},
+
+	// Piper TTS HTTP wrapper — small, edge-deployed, often on Raspberry Pi.
+	// Default port 5000 conflicts with Flask-many; require body_contains to
+	// disambiguate.
+	{
+		Name:         "Piper TTS",
+		DefaultPorts: []int{5000, 8080, 10200},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "piper"},
+				{Type: "body_contains", Value: "tts"},
+			}},
+		},
+		Severity: "low",
+	},
+
+	// RVC WebUI / GPT-SoVITS / Applio — the voice-cloning Gradio family.
+	// Distinct fingerprint vs generic Gradio because the page advertises
+	// the specific project name. Severity high because this is the
+	// fraud-relevant class.
+	{
+		Name:         "RVC Voice Cloning WebUI",
+		DefaultPorts: []int{7865, 7860, 7897},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "Retrieval-based-Voice-Conversion"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "GPT-SoVITS"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "Applio"},
+			}},
+		},
+		Severity: "high",
+	},
+
+	// OpenVoice (MyShell.ai) — multi-language voice cloning via speaker
+	// embedding extraction. The se_extractor module name is project-specific.
+	{
+		Name:         "OpenVoice",
+		DefaultPorts: []int{7860, 8000},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "OpenVoice"},
+				{Type: "body_contains", Value: "myshell"},
+			}},
+		},
+		Severity: "high",
+	},
+
+	// ChatTTS (2noise) — conversational TTS, viral mid-2024.
+	{
+		Name:         "ChatTTS",
+		DefaultPorts: []int{7860, 8000, 9966},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "ChatTTS"},
+				{Type: "body_contains", Value: "2noise"},
+			}},
+		},
+		Severity: "medium",
+	},
+
+	// F5-TTS — flow-matching TTS (2024-25). Lab demo deployments.
+	{
+		Name:         "F5-TTS",
+		DefaultPorts: []int{7860, 8000},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "F5-TTS"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "swivid/f5-tts"},
+			}},
+		},
+		Severity: "medium",
+	},
+
+	// Pipecat (Daily.co) — real-time voice-agent framework. Severity high
+	// because abuse is "outbound call automation" not just compute theft.
+	{
+		Name:         "Pipecat Voice Agent",
+		DefaultPorts: []int{7860, 8000, 8080},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "pipecat"},
+			}},
+			{Path: "/health", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "pipecat"},
+			}},
+		},
+		Severity: "high",
+	},
+
+	// Vocode — voice-agent framework, often paired with twilio/daily.co.
+	// Conjunctive match on banner term + framework signature to keep the
+	// 4-hit Shodan FP-prone "vocode" string from over-matching.
+	{
+		Name:         "Vocode Voice Agent",
+		DefaultPorts: []int{8000, 3000, 7860},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "vocode"},
+				{Type: "body_contains", Value: "transcriber"},
+			}},
+		},
+		Severity: "high",
+	},
+
+	// LiveKit Agents — real-time AV pipeline framework.
+	{
+		Name:         "LiveKit Agents",
+		DefaultPorts: []int{7880, 8080, 3000},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "livekit-agents"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "livekit-server"},
+			}},
+		},
+		Severity: "medium",
+	},
 }
 
 // ── Matching engine ─────────────────────────────────────────────────

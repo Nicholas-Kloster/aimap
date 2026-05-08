@@ -2,6 +2,50 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.6.0] — 2026-05-08
+
+BI/Dashboard tier (3 platforms) + Voice/Audio AI tier (10 platforms). Backward-compatible: no CLI, JSON schema, or existing-fingerprint output changes. Fingerprint count: 53 → 66.
+
+### Added
+
+**BI / Dashboard fingerprints** (already shipped in `b9136a9` — formalized in this release):
+
+| Service | Ports | Probe | Notes |
+|---------|-------|-------|-------|
+| Metabase | 3000, 80, 443, 8080, 8443 | `GET /api/session/properties` (status 200 + `json_field:has-user-setup`) | High — CVE-2023-38646 pre-auth RCE via setup wizard if `has-user-setup:false` |
+| Apache Superset | 8088, 80, 443, 8080 | `GET /api/v1/` (status 200 + `json_field:message` + `body_contains:Superset`) | High — CVE-2023-27524 predictable SECRET_KEY auth bypass; default-creds `admin/general` and `admin/admin` checks |
+| Redash | 5000, 80, 443, 8080 | `GET /api/status` (status 200 + `json_field:workers` + `json_field:version`) | High — `/api/data_sources` unauth = CRITICAL when present |
+
+**Voice / Audio AI fingerprints** — 10 new entries:
+
+| Service | Ports | Probe (conjunctive) | Severity | Why |
+|---------|-------|---------------------|---------:|-----|
+| Whisper ASR | 9000, 8080, 7860, 8000 | `body_contains:openai-whisper-asr-webservice` OR `/inference + body:whisper.cpp` OR `/docs + body:Whisper + body:/asr` | medium | Compute theft + PHI/PII risk in healthcare deployments |
+| Coqui XTTS | 8020, 5002, 8000 | `/api/tts/speakers + body:speaker` OR `/ + body:XTTS + body:coqui` | medium | Voice-cloning compute theft |
+| Piper TTS | 5000, 8080, 10200 | `body:piper + body:tts` | low | Edge / RPi deployments |
+| RVC Voice Cloning WebUI | 7865, 7860, 7897 | `body:Retrieval-based-Voice-Conversion` / `body:GPT-SoVITS` / `body:Applio` | **high** | **Fraud-relevant — celebrity voice clones, deepfake-call enablement** |
+| OpenVoice | 7860, 8000 | `body:OpenVoice + body:myshell` | **high** | Multi-language voice cloning |
+| ChatTTS | 7860, 8000, 9966 | `body:ChatTTS + body:2noise` | medium | Conversational TTS |
+| F5-TTS | 7860, 8000 | `body:F5-TTS` OR `body:swivid/f5-tts` | medium | Flow-matching voice clone |
+| Pipecat Voice Agent | 7860, 8000, 8080 | `body:pipecat` (root or /health) | **high** | **Real-time outbound-call abuse — Twilio/Daily integration** |
+| Vocode Voice Agent | 8000, 3000, 7860 | `body:vocode + body:transcriber` | **high** | Same — voice-agent framework abuse |
+| LiveKit Agents | 7880, 8080, 3000 | `body:livekit-agents` OR `body:livekit-server` | medium | Real-time AV pipeline |
+
+### Severity rationale (Voice / Audio)
+
+Voice-cloning (RVC / OpenVoice) and real-time voice-agent (Pipecat / Vocode) fingerprints get `severity:high` because the abuse class differs qualitatively from typical compute-theft. RVC servers loaded with celebrity speaker embeddings are deepfake-fraud infrastructure; Pipecat / Vocode servers integrated with Twilio can make outbound scam calls. Other voice/audio fingerprints (transcription, simple TTS) stay at `medium` / `low`.
+
+### Methodology context
+
+Closes the Speech & Audio AI tier in [`FUTURE-SURVEYS.md`](https://github.com/Nicholas-Kloster/AI-LLM-Infrastructure-OSINT/blob/main/case-studies/commercial/FUTURE-SURVEYS.md). Companion query catalog at `shodan/queries/17-voice-audio-ai.md` and discovery runbook at `data/voice-audio-ai-discovery-runbook.sh` in the OSINT repo.
+
+**Wake Forest "WHISPER" FP class** documented in the survey-17 catalog. `whisper.phs.wakehealth.edu` is a federally-funded clinical research portal (ColdFusion-on-IIS) that surfaces in `http.title:"Whisper"` Shodan dorks via keyword collision — pure FP for voice/audio AI. Same lesson class as the Garak / Garakuta-no-Kamisama collision Session 9 caught: single-keyword title/html match is unsound at population scale. The aimap fingerprints here all use conjunctive `body_contains` anchored to the actual project name (`openai-whisper-asr-webservice`, `whisper.cpp`, `Retrieval-based-Voice-Conversion`, `pipecat`, etc.) to avoid this class of FP.
+
+### Notes for fingerprint authors
+
+- Port 7860 (Gradio default) is heavily collision-prone across image generation, TTS, ASR, and voice cloning. Voice/audio fingerprints disambiguate via project-specific body strings; the catalog's `port:7860 http.html:"voice"` / `"speech"` / `"clone"` cross-cuts apply at Shodan-dork level, not at fingerprint level.
+- Port 8000 / 8080 collisions (uvicorn, FastAPI generic) are handled by the same conjunctive pattern — voice-AI fingerprints require the project name appear in body.
+
 ## [v1.5.0] — 2026-05-05
 
 Specialty data layers — analytic / OLAP / NoSQL tier. Backward-compatible: no CLI, JSON schema, or existing-fingerprint output changes.
