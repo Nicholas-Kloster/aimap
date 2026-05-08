@@ -293,7 +293,8 @@ var Fingerprints = []Fingerprint{
 		Probes: []Probe{
 			{Path: "/api/public/health", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
-				{Type: "body_contains", Value: "status"},
+				{Type: "json_field", Field: "status"},
+				{Type: "json_field", Field: "version"},
 			}},
 			{Path: "/", Matches: []MatchCond{
 				{Type: "body_contains", Value: "langfuse"},
