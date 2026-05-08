@@ -191,6 +191,27 @@ func httpGET(c *http.Client, url string) (int, map[string]string, []byte, error)
 	return resp.StatusCode, hdrs, body, nil
 }
 
+func httpPOST(c *http.Client, url, contentType string, body []byte) (int, map[string]string, []byte, error) {
+	req, err := http.NewRequest("POST", url, strings.NewReader(string(body)))
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	req.Header.Set("User-Agent", "aimap/1.0 (security-research)")
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.Do(req)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	defer resp.Body.Close()
+	hdrs := make(map[string]string)
+	for k, v := range resp.Header {
+		hdrs[k] = strings.Join(v, ", ")
+	}
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return resp.StatusCode, hdrs, respBody, nil
+}
+
 // ── JSON ────────────────────────────────────────────────────────────
 
 func parseJSON(data []byte) (map[string]interface{}, error) {

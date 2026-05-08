@@ -146,6 +146,12 @@ func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool
 			result = enumDify(client, svc)
 		case "Docker Registry":
 			result = enumDockerRegistry(client, svc)
+		case "Metabase":
+			result = enumMetabase(client, svc)
+		case "Apache Superset":
+			result = enumSuperset(client, svc)
+		case "Redash":
+			result = enumRedash(client, svc)
 		case "Grafana":
 			result = enumGrafana(client, svc)
 		case "Prometheus":
@@ -1033,6 +1039,239 @@ func enumDockerRegistry(c *http.Client, svc ServiceMatch) EnumResult {
 			Category: "access", Title: "Docker Registry detected — catalog access denied",
 			Severity: "low",
 		})
+	}
+
+	return r
+}
+
+// ── Metabase ─────────────────────────────────────────────────────────
+func enumMetabase(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "unknown"
+
+	// /api/session/properties — always public, reveals setup state + version
+	if st, _, body, err := httpGET(c, b+"/api/session/properties"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["session_properties"] = m
+
+			if v, ok := m["version"].(map[string]any); ok {
+				if tag, ok := v["tag"].(string); ok {
+					r.Version = tag
+				}
+			}
+
+			// CVE-2023-38646: setup wizard active = pre-auth RCE via JDBC injection
+			if setup, ok := m["has-user-setup"].(bool); ok && !setup {
+				r.AuthStatus = "none (setup wizard active)"
+				r.Findings = append(r.Findings, Finding{
+					Category: "rce",
+					Title:    "Metabase setup wizard active — CVE-2023-38646 pre-auth RCE via JDBC injection",
+					Severity: "critical",
+				})
+			}
+
+			if token, ok := m["setup-token"].(string); ok && token != "" {
+				r.RawData["setup_token"] = token
+				r.Findings = append(r.Findings, Finding{
+					Category: "credentials",
+					Title:    fmt.Sprintf("Setup token exposed: %s", token),
+					Severity: "critical",
+				})
+			}
+		}
+	}
+
+	// /api/health — version cross-check
+	if st, _, body, err := httpGET(c, b+"/api/health"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["health"] = m
+			if r.AuthStatus == "unknown" {
+				r.AuthStatus = "login required"
+			}
+		}
+	}
+
+	// /api/database — lists DB connections with engine + details (requires auth, but misconfigured instances leak it)
+	if st, _, body, err := httpGET(c, b+"/api/database"); err == nil && st == 200 {
+		r.AuthStatus = "none"
+		if m, err := parseJSON(body); err == nil {
+			data, _ := m["data"].([]any)
+			r.Details = append(r.Details, fmt.Sprintf("Databases: %d", len(data)))
+			r.Findings = append(r.Findings, Finding{
+				Category: "credentials",
+				Title:    fmt.Sprintf("%d database connections exposed — connection strings and credentials readable", len(data)),
+				Severity: "critical",
+			})
+			r.RawData["databases"] = data
+		}
+	} else if st == 401 || st == 403 {
+		if r.AuthStatus == "unknown" {
+			r.AuthStatus = fmt.Sprintf("required (HTTP %d)", st)
+		}
+	}
+
+	// /api/user — user enumeration (auth required normally)
+	if st, _, body, err := httpGET(c, b+"/api/user"); err == nil && st == 200 {
+		if arr, err := parseJSONArray(body); err == nil {
+			r.Details = append(r.Details, fmt.Sprintf("Users: %d", len(arr)))
+			r.Findings = append(r.Findings, Finding{
+				Category: "info",
+				Title:    fmt.Sprintf("%d users enumerated without authentication", len(arr)),
+				Severity: "high",
+			})
+		}
+	}
+
+	return r
+}
+
+// ── Apache Superset ───────────────────────────────────────────────────
+func enumSuperset(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "login required"
+
+	// /api/v1/me/ — unauth access would be anomalous
+	if st, _, body, err := httpGET(c, b+"/api/v1/me/"); err == nil {
+		if st == 200 {
+			r.AuthStatus = "none"
+			if m, err := parseJSON(body); err == nil {
+				r.RawData["me"] = m
+				r.Findings = append(r.Findings, Finding{
+					Category: "access",
+					Title:    "Superset /api/v1/me/ accessible without auth — session/role data exposed",
+					Severity: "high",
+				})
+			}
+		} else if st == 401 || st == 403 {
+			r.AuthStatus = fmt.Sprintf("required (HTTP %d)", st)
+		}
+		_ = body
+	}
+
+	// Default credentials: admin/general (Superset quickstart default)
+	type loginPayload struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+		Provider string `json:"provider"`
+		Refresh  bool   `json:"refresh"`
+	}
+	for _, creds := range []loginPayload{
+		{Username: "admin", Password: "general", Provider: "db", Refresh: true},
+		{Username: "admin", Password: "admin", Provider: "db", Refresh: true},
+	} {
+		payload, _ := json.Marshal(creds)
+		if st, _, loginBody, err := httpPOST(c, b+"/api/v1/security/login", "application/json", payload); err == nil && st == 200 {
+			if m, err := parseJSON(loginBody); err == nil {
+				if token, ok := m["access_token"].(string); ok && token != "" {
+					r.AuthStatus = "none (default credentials)"
+					r.RawData["access_token"] = token[:min(20, len(token))] + "..."
+					r.Findings = append(r.Findings, Finding{
+						Category: "credentials",
+						Title:    fmt.Sprintf("Default credentials valid: %s/%s — full admin access", creds.Username, creds.Password),
+						Severity: "critical",
+					})
+					break
+				}
+			}
+		}
+	}
+
+	// /api/v1/database/ — DB connection strings (requires auth)
+	if st, _, body, err := httpGET(c, b+"/api/v1/database/"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			count, _ := m["count"].(float64)
+			r.Details = append(r.Details, fmt.Sprintf("Databases: %d", int(count)))
+			r.Findings = append(r.Findings, Finding{
+				Category: "credentials",
+				Title:    fmt.Sprintf("%d database connections exposed", int(count)),
+				Severity: "critical",
+			})
+			r.RawData["databases"] = m
+		}
+	} else {
+		_ = body
+	}
+
+	// Version from /api/v1/
+	if st, _, body, err := httpGET(c, b+"/api/v1/"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["api_root"] = m
+		}
+	} else {
+		_ = body
+	}
+
+	return r
+}
+
+// ── Redash ───────────────────────────────────────────────────────────
+func enumRedash(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "unknown"
+
+	// /api/status — always public, exposes version + worker state
+	if st, _, body, err := httpGET(c, b+"/api/status"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["status"] = m
+			if v, ok := m["version"].(string); ok {
+				r.Version = v
+			}
+			if workers, ok := m["workers"].([]any); ok {
+				r.Details = append(r.Details, fmt.Sprintf("Workers: %d", len(workers)))
+			}
+			r.AuthStatus = "login required"
+		}
+	}
+
+	// /api/data_sources — connection strings (critical if unauth)
+	if st, _, body, err := httpGET(c, b+"/api/data_sources"); err == nil && st == 200 {
+		r.AuthStatus = "none"
+		if arr, err := parseJSONArray(body); err == nil {
+			r.Details = append(r.Details, fmt.Sprintf("Data sources: %d", len(arr)))
+			r.Findings = append(r.Findings, Finding{
+				Category: "credentials",
+				Title:    fmt.Sprintf("%d data source connections exposed without authentication — connection strings readable", len(arr)),
+				Severity: "critical",
+			})
+			r.RawData["data_sources"] = arr
+		}
+	} else if st == 401 || st == 403 {
+		if r.AuthStatus == "unknown" {
+			r.AuthStatus = fmt.Sprintf("required (HTTP %d)", st)
+		}
+	}
+
+	// /api/queries — stored queries (data disclosure)
+	if st, _, body, err := httpGET(c, b+"/api/queries"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			if results, ok := m["results"].([]any); ok {
+				r.Details = append(r.Details, fmt.Sprintf("Queries: %d", len(results)))
+				r.Findings = append(r.Findings, Finding{
+					Category: "info",
+					Title:    fmt.Sprintf("%d stored queries exposed — query logic and table structure visible", len(results)),
+					Severity: "medium",
+				})
+			}
+		}
+	} else {
+		_ = body
+	}
+
+	// /api/users — user enumeration
+	if st, _, body, err := httpGET(c, b+"/api/users"); err == nil && st == 200 {
+		if arr, err := parseJSONArray(body); err == nil {
+			r.Details = append(r.Details, fmt.Sprintf("Users: %d", len(arr)))
+			r.Findings = append(r.Findings, Finding{
+				Category: "info",
+				Title:    fmt.Sprintf("%d users enumerated without authentication", len(arr)),
+				Severity: "medium",
+			})
+		}
+	} else {
+		_ = body
 	}
 
 	return r

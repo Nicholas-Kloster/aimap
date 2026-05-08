@@ -442,6 +442,43 @@ var Fingerprints = []Fingerprint{
 		Severity: "high",
 	},
 
+	// ── BI / Dashboard / Visualization ──────────────────────────
+	{
+		Name:         "Metabase",
+		DefaultPorts: []int{3000, 80, 443},
+		Probes: []Probe{
+			{Path: "/api/session/properties", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "has-user-setup"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "Apache Superset",
+		DefaultPorts: []int{8088},
+		Probes: []Probe{
+			{Path: "/api/v1/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "message"},
+				{Type: "body_contains", Value: "Superset"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "Redash",
+		DefaultPorts: []int{5000, 80, 443},
+		Probes: []Probe{
+			{Path: "/api/status", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "workers"},
+				{Type: "json_field", Field: "version"},
+			}},
+		},
+		Severity: "high",
+	},
+
 	// ── Observability / infra co-deployed with AI stacks ───────
 	{
 		Name:         "Grafana",

@@ -23,7 +23,7 @@ Security teams can't secure what they can't see, and AI adoption moves faster th
 
 Generic scanners (`nmap`, `nuclei`) don't identify these as AI services, so they don't show up in the security team's inventory. aimap does.
 
-## What it detects (36 services)
+## What it detects (56 services)
 
 | Category | Services |
 |---|---|
@@ -32,10 +32,13 @@ Generic scanners (`nmap`, `nuclei`) don't identify these as AI services, so they
 | ML platforms | MLflow, TensorFlow Serving, Triton Inference Server, Ray Serve, Ray Dashboard, Kubeflow |
 | Orchestration / UI | LangServe, Flowise, Dify, Open WebUI, SillyTavern, LiteLLM, BentoML |
 | AI agent platforms | OpenHands, Mem0, Coolify, Clawdbot |
-| Observability / infra | Langfuse, Grafana, Prometheus, etcd, MinIO, n8n |
+| BI / Dashboard | Metabase, Apache Superset, Redash, Grafana |
+| Observability / infra | Langfuse, Prometheus, etcd, MinIO, n8n |
+| AI safety / eval | Promptfoo, NeMo Guardrails, DeepEval, LangSmith, Inspect AI, Garak REST, Lakera Guard |
+| Compute orchestration | Ray, Kubeflow, Spark, Airflow, BentoML, ClickHouse, Apache Pinot, ScyllaDB |
 | Notebooks / dev / adjacent | Jupyter Notebook, Open Directory, Docker Registry |
 
-Each service has a dedicated fingerprint. 26 of the 36 services also have dedicated deep enumerators that surface PII fields, unauthenticated RCE, exposed credentials, claimable admin states, and other actionable findings.
+Each service has a dedicated fingerprint. 33 of the 56 services also have dedicated deep enumerators that surface PII fields, unauthenticated RCE, exposed credentials, claimable admin states, and other actionable findings.
 
 ## Companion tool: `aimap-profile`
 
@@ -109,13 +112,13 @@ jq '.enum_results[] | select(.risk_level == "critical")' check.json
 |------|---------|-------------|
 | `-target` | — | Single target (IP, hostname, or CIDR) |
 | `-list` | — | File of targets, one per line (`#` comments supported) |
-| `-ports` | 26-port default set | Comma-separated ports to scan |
+| `-ports` | 41-port default set | Comma-separated ports to scan |
 | `-timeout` | `5s` | Connection timeout |
 | `-threads` | `20` | Concurrent scan threads |
 | `-o` | — | JSON report output file |
 | `-v` | false | Verbose output |
 
-Default port list: `80,443,8080,8443,11434,8000,3000,6333,19530,9091,8888,8501,9090,5000,5001,4000,7860,3001,8265,51000,55000,2379,5678,9000,30000,18789`
+Default port list: `80,443,1984,2379,3000,3001,4000,4040,4200,5000,5001,5678,6333,7575,7576,7860,8000,8001,8080,8081,8088,8123,8233,8265,8443,8501,8787,8888,8889,9000,9090,9091,10000,11434,15500,18080,18789,19530,30000,51000,55000`
 
 See `man aimap` (if installed system-wide) for the full reference.
 
