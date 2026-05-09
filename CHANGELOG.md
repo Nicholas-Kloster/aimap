@@ -2,6 +2,16 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.7.1] — 2026-05-09
+
+Phase 2 fingerprinting made concurrent. Backward-compatible performance fix.
+
+### Fixed
+
+- `matchFingerprints` was sequential (single loop over all open ports, all fingerprints, all probes). On large port lists (4,484 open ports from 818-IP embedding survey) this produced estimated runtime of hours. Now uses a goroutine pool gated by the `-threads` flag (same semaphore pattern as Phase 1 port discovery). Phase 2 runtime on the embedding pool: 3–5 min instead of 4+ hours. `sync` added to `fingerprints.go` imports.
+
+---
+
 ## [v1.7.0] — 2026-05-09
 
 Embedding Services tier (3 platforms). Backward-compatible. Fingerprint count: 66 → 69. Enumerator count: 33 → 36.

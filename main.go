@@ -123,7 +123,7 @@ func main() {
 	// ── Phase 2: Fingerprinting ──────────────────────────────────
 	printPhase(2, "AI SERVICE FINGERPRINTING")
 
-	services := matchFingerprints(openPorts, *timeout, *verbose)
+	services := matchFingerprints(openPorts, *timeout, *verbose, *threads)
 
 	if len(services) == 0 {
 		fmt.Printf("\n  %s No AI/ML services identified on open ports.\n\n", yellow("[!]"))

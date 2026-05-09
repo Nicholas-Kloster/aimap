@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -1106,70 +1107,86 @@ var Fingerprints = []Fingerprint{
 
 // ── Matching engine ─────────────────────────────────────────────────
 
-func matchFingerprints(openPorts []PortResult, timeout time.Duration, verbose bool) []ServiceMatch {
+func matchFingerprints(openPorts []PortResult, timeout time.Duration, verbose bool, threads int) []ServiceMatch {
 	client := newHTTPClient(timeout)
-	var matches []ServiceMatch
+	var (
+		mu      sync.Mutex
+		matches []ServiceMatch
+		wg      sync.WaitGroup
+	)
+	sem := make(chan struct{}, threads)
 
 	for _, port := range openPorts {
-		// Determine scheme(s) to try. Always include both so that a TLS port
-		// that also speaks plaintext (e.g. OpenHands admin console) can match
-		// on the richer HTTP body when the HTTPS SPA shell is too sparse.
-		schemes := []string{"http", "https"}
-		if port.TLS {
-			schemes = []string{"https", "http"}
-		}
+		port := port
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
 
-		for _, fp := range Fingerprints {
-			matched := false
-			for _, probe := range fp.Probes {
-				if matched {
-					break
-				}
-				for _, scheme := range schemes {
-					url := fmt.Sprintf("%s://%s:%d%s", scheme, port.Host, port.Port, probe.Path)
-					status, headers, body, err := httpGET(client, url)
-					if err != nil {
-						continue
+			// Determine scheme(s) to try. Always include both so that a TLS port
+			// that also speaks plaintext (e.g. OpenHands admin console) can match
+			// on the richer HTTP body when the HTTPS SPA shell is too sparse.
+			schemes := []string{"http", "https"}
+			if port.TLS {
+				schemes = []string{"https", "http"}
+			}
+
+			for _, fp := range Fingerprints {
+				matched := false
+				for _, probe := range fp.Probes {
+					if matched {
+						break
 					}
+					for _, scheme := range schemes {
+						url := fmt.Sprintf("%s://%s:%d%s", scheme, port.Host, port.Port, probe.Path)
+						status, headers, body, err := httpGET(client, url)
+						if err != nil {
+							continue
+						}
 
-					allMatch := true
-					for _, mc := range probe.Matches {
-						if !evalMatch(mc, status, headers, body) {
-							allMatch = false
+						allMatch := true
+						for _, mc := range probe.Matches {
+							if !evalMatch(mc, status, headers, body) {
+								allMatch = false
+								break
+							}
+						}
+
+						if allMatch {
+							baseURL := fmt.Sprintf("%s://%s:%d", scheme, port.Host, port.Port)
+							sm := ServiceMatch{
+								Host:      port.Host,
+								Port:      port.Port,
+								Service:   fp.Name,
+								Severity:  fp.Severity,
+								BaseURL:   baseURL,
+								MatchPath: probe.Path,
+							}
+							if json.Valid(body) {
+								sm.MatchBody = json.RawMessage(body)
+							}
+							if parsed, err := parseJSON(body); err == nil {
+								if v := jStr(parsed, "version"); v != "" {
+									sm.Version = v
+								}
+							}
+							if verbose {
+								fmt.Printf("    %s %s on %s:%d via %s\n",
+									green("[match]"), fp.Name, port.Host, port.Port, probe.Path)
+							}
+							mu.Lock()
+							matches = append(matches, sm)
+							mu.Unlock()
+							matched = true
 							break
 						}
 					}
-
-					if allMatch {
-						baseURL := fmt.Sprintf("%s://%s:%d", scheme, port.Host, port.Port)
-						sm := ServiceMatch{
-							Host:      port.Host,
-							Port:      port.Port,
-							Service:   fp.Name,
-							Severity:  fp.Severity,
-							BaseURL:   baseURL,
-							MatchPath: probe.Path,
-						}
-						if json.Valid(body) {
-							sm.MatchBody = json.RawMessage(body)
-						}
-						if parsed, err := parseJSON(body); err == nil {
-							if v := jStr(parsed, "version"); v != "" {
-								sm.Version = v
-							}
-						}
-						if verbose {
-							fmt.Printf("    %s %s on %s:%d via %s\n",
-								green("[match]"), fp.Name, port.Host, port.Port, probe.Path)
-						}
-						matches = append(matches, sm)
-						matched = true
-						break
-					}
 				}
 			}
-		}
+		}()
 	}
+	wg.Wait()
 	return matches
 }
 
