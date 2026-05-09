@@ -2,6 +2,16 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.7.2] — 2026-05-09
+
+Port-filtered fingerprint matching in Phase 2. Backward-compatible performance fix.
+
+### Fixed
+
+- Phase 2 was trying all 69 fingerprints against every open port, regardless of whether the fingerprint's `DefaultPorts` included that port. Now builds a `candidateFPs` slice per port: only fingerprints whose `DefaultPorts` list the port (or have no restriction). On single-service ports (11434 = Ollama, 7997 = infinity-embedding, 6333 = Qdrant) reduces from 69 probes to 1. On common ports (8080, 8000) reduces to 20-30. Combined with the v1.7.1 concurrent goroutines and 2s timeout, Phase 2 on the 818-IP embedding survey completes in under 10 min.
+
+---
+
 ## [v1.7.1] — 2026-05-09
 
 Phase 2 fingerprinting made concurrent. Backward-compatible performance fix.
