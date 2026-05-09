@@ -176,6 +176,12 @@ func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool
 			result = enumDeepEval(client, svc)
 		case "LangSmith Self-Hosted":
 			result = enumLangSmith(client, svc)
+		case "HuggingFace TEI":
+			result = enumTEI(client, svc)
+		case "infinity-embedding":
+			result = enumInfinity(client, svc)
+		case "Embedding API":
+			result = enumEmbeddingAPI(client, svc)
 		default:
 			result = mkResult(svc)
 		}
@@ -2331,6 +2337,160 @@ func checkGeneric(c *http.Client, svc ServiceMatch) []Finding {
 	}
 
 	return findings
+}
+
+// ── Embedding Services ───────────────────────────────────────────────
+
+func enumTEI(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "none"
+
+	if st, _, body, err := httpGET(c, b+"/info"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["info"] = m
+			if v := jStr(m, "model_id"); v != "" {
+				r.Details = append(r.Details, "Model: "+v)
+			}
+			if v := jStr(m, "version"); v != "" {
+				r.Version = v
+			}
+			if v := jStr(m, "max_input_length"); v != "" {
+				r.Details = append(r.Details, "Max input length: "+v)
+			}
+			if v := jStr(m, "max_batch_total_tokens"); v != "" {
+				r.Details = append(r.Details, "Max batch tokens: "+v)
+			}
+		}
+	}
+
+	if st, _, body, err := httpGET(c, b+"/metrics"); err == nil && st == 200 {
+		bodyStr := string(body)
+		r.RawData["metrics_sample"] = bodyStr[:min(len(bodyStr), 512)]
+		if strings.Contains(bodyStr, "te_request_count") {
+			r.Details = append(r.Details, "Prometheus metrics exposed (te_request_count visible)")
+		}
+		if strings.Contains(bodyStr, "te_embed_count") {
+			r.Details = append(r.Details, "Embed call counter exposed")
+		}
+	}
+
+	r.Findings = append(r.Findings, Finding{
+		Category: "access",
+		Title:    "Unauthenticated TEI embedding server",
+		Detail:   "HuggingFace Text Embeddings Inference ships with no authentication. Any caller can submit text for embedding at the operator's GPU cost, and use this server as an embedding oracle to pre-compute query vectors against the downstream vector database.",
+		Severity: "medium",
+	})
+
+	return r
+}
+
+func enumInfinity(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "none"
+
+	if st, _, body, err := httpGET(c, b+"/v1/models"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["models"] = m
+		}
+	}
+
+	if st, _, body, err := httpGET(c, b+"/openapi.json"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			if info, ok := m["info"].(map[string]interface{}); ok {
+				if v, ok := info["version"].(string); ok {
+					r.Version = v
+				}
+				if t, ok := info["title"].(string); ok {
+					r.Details = append(r.Details, "API title: "+t)
+				}
+			}
+		}
+	}
+
+	r.Findings = append(r.Findings, Finding{
+		Category: "access",
+		Title:    "Unauthenticated infinity-embedding server",
+		Detail:   "infinity-embedding (michaelfeil/infinity) exposes an OpenAI-compatible /v1/embeddings endpoint with no authentication. Compute theft and embedding oracle attack against downstream vector stores.",
+		Severity: "medium",
+	})
+
+	return r
+}
+
+func enumEmbeddingAPI(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "none"
+
+	if st, _, body, err := httpGET(c, b+"/"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["root"] = m
+			if v := jStr(m, "embed"); v != "" {
+				r.Details = append(r.Details, "Embed model: "+v)
+			}
+			if v := jStr(m, "embedding_dimension"); v != "" {
+				r.Details = append(r.Details, "Embedding dimension: "+v)
+			}
+			if v := jStr(m, "model_name"); v != "" {
+				r.Details = append(r.Details, "Model: "+v)
+			}
+			if v := jStr(m, "reranker"); v != "" {
+				r.Details = append(r.Details, "Reranker: "+v)
+			}
+			if v := jStr(m, "llm"); v != "" {
+				r.Details = append(r.Details, "LLM: "+v)
+			}
+			if v := jStr(m, "index_dir"); v != "" {
+				r.Details = append(r.Details, "Index dir (path leak): "+v)
+			}
+			if v := jStr(m, "docs_dir"); v != "" {
+				r.Details = append(r.Details, "Docs dir (path leak): "+v)
+			}
+		}
+	}
+
+	if st, _, body, err := httpGET(c, b+"/health"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["health"] = m
+			if v := jStr(m, "model_name"); v != "" && len(r.Details) == 0 {
+				r.Details = append(r.Details, "Model: "+v)
+			}
+			if v := jStr(m, "embedding_dimension"); v != "" {
+				r.Details = append(r.Details, "Embedding dimension: "+v)
+			}
+		}
+	}
+
+	if st, _, body, err := httpGET(c, b+"/openapi.json"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			if info, ok := m["info"].(map[string]interface{}); ok {
+				if t, ok := info["title"].(string); ok {
+					r.Details = append(r.Details, "API: "+t)
+				}
+				if v, ok := info["version"].(string); ok {
+					r.Version = v
+				}
+			}
+		}
+	}
+
+	r.Findings = append(r.Findings, Finding{
+		Category: "access",
+		Title:    "Unauthenticated embedding API",
+		Detail:   "Custom FastAPI embedding server with no authentication. Root endpoint leaks embedding model, vector dimension, reranker, LLM backend, and internal filesystem paths. Compute theft + embedding oracle.",
+		Severity: "medium",
+	})
+
+	return r
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func computeRisk(r EnumResult) string {

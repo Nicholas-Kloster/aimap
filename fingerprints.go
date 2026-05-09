@@ -1037,6 +1037,71 @@ var Fingerprints = []Fingerprint{
 		},
 		Severity: "medium",
 	},
+
+	// ── Embedding Services ──────────────────────────────────────────────
+
+	// HuggingFace Text Embeddings Inference (TEI) — canonical standalone
+	// embedding server from HuggingFace. Exposes /info with model_pipeline_tag
+	// = "feature-extraction" (never present in LLM inference servers).
+	// Ships auth-off; compute theft + embedding oracle against downstream RAG.
+	{
+		Name:         "HuggingFace TEI",
+		DefaultPorts: []int{80, 8080, 3000},
+		Probes: []Probe{
+			{Path: "/info", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "model_pipeline_tag"},
+				{Type: "body_contains", Value: "feature-extraction"},
+			}},
+		},
+		Severity: "medium",
+	},
+
+	// infinity-embedding (michaelfeil/infinity) — OpenAI-compat embedding
+	// server. Default port 7997. /openapi.json title is "Infinity Emb".
+	{
+		Name:         "infinity-embedding",
+		DefaultPorts: []int{7997, 8080, 8000},
+		Probes: []Probe{
+			{Path: "/openapi.json", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "Infinity Emb"},
+			}},
+			{Path: "/v1/models", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "data"},
+				{Type: "body_contains", Value: "infinity_emb"},
+			}},
+		},
+		Severity: "medium",
+	},
+
+	// Custom Embedding API — FastAPI/uvicorn embedding servers (the dominant
+	// shape in the wild). Root GET / returns JSON with "embed" key referencing
+	// a model name, or "embedding_dimension" (OpenVINO pattern). Covers
+	// BAAI/bge, nomic-embed, multilingual-e5, and other model families
+	// served via custom FastAPI wrappers. Auth-off by default on every
+	// observed instance; leaks model name, embedding dimension, vector DB
+	// collection names, and internal filesystem paths.
+	{
+		Name:         "Embedding API",
+		DefaultPorts: []int{8000, 8001, 8080, 8002, 8100, 5000},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "embedding_dimension"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "embed"},
+			}},
+			{Path: "/health", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "embedding_dimension"},
+			}},
+		},
+		Severity: "medium",
+	},
 }
 
 // ── Matching engine ─────────────────────────────────────────────────

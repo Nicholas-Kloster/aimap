@@ -2,6 +2,40 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.7.0] — 2026-05-09
+
+Embedding Services tier (3 platforms). Backward-compatible. Fingerprint count: 66 → 69. Enumerator count: 33 → 36.
+
+### Added
+
+**Fingerprints** — 3 new entries:
+
+| Service | Ports | Probe (conjunctive) | Severity | Notes |
+|---------|-------|---------------------|----------|-------|
+| HuggingFace TEI | 80, 8080, 3000 | `GET /info` → status 200 + `json_field:model_pipeline_tag` + `body_contains:feature-extraction` | medium | `model_pipeline_tag:"feature-extraction"` is TEI-unique — not present in any LLM inference server; disambiguates from Ollama/llama.cpp |
+| infinity-embedding | 7997, 8080, 8000 | `GET /openapi.json` → status 200 + `body_contains:Infinity Emb`; alt: `GET /v1/models` → `json_field:data` + `body_contains:infinity_emb` | medium | OpenAI-compat embedding server; OpenAPI title is the discriminating signal |
+| Embedding API | 8000, 8001, 8080, 8002, 8100, 5000 | `GET /` → status 200 + `json_field:embedding_dimension`; OR `json_field:embed`; OR `GET /health` → `json_field:embedding_dimension` | medium | Custom FastAPI catch-all — `embedding_dimension` / `embed` JSON keys are embedding-specific; not present in LLM or general API roots |
+
+**Enumerators** — 3 new deep enumerators:
+
+| Enumerator | Probes | Extracted fields |
+|-----------|--------|-----------------|
+| `enumTEI` | `/info`, `/metrics` | model_id, version, max_input_length, max_batch_total_tokens, max_concurrent_requests; Prometheus te_request_count / te_embed_count |
+| `enumInfinity` | `/v1/models`, `/openapi.json` | model list, OpenAPI title, version |
+| `enumEmbeddingAPI` | `/`, `/health`, `/openapi.json` | embed model, embedding_dimension, reranker, llm backend, index_dir, docs_dir (filesystem path leak) |
+
+### Methodology notes
+
+Embedding services are **Shodan-dark** — TEI, infinity, and custom FastAPI embedding servers all return API JSON at `GET /`, which Shodan's crawler treats as non-HTML and indexes minimally. Shodan `http.html:"BAAI/bge"` (41 hits), `http.html:"nomic-embed"` (22 hits) and similar model-name queries are the only Shodan-viable approach; they work because model names appear in HTML dashboards, not because Shodan indexes the API roots.
+
+**Docker Registry FP:** `"text-embeddings-inference"` in banner (6 hits) matches Docker Registry `/v2/_catalog` responses listing the TEI image. Not live TEI servers. The TEI fingerprint probes `/info` specifically to avoid this.
+
+**Reposify contamination:** `http.html:"all-MiniLM"` at 404 hits is dominated by `Server: Reposify` honeypots at `Content-Length: 3151`. Filter: `server:"Reposify"` exclusion.
+
+**Threat class:** Compute theft (GPU/CPU at operator's expense) + embedding oracle (attacker pre-computes query vectors to probe downstream vector DBs without the embedding key). Severity elevated to high when paired with exposed vector DB on same host.
+
+Companion survey catalog: [`AI-LLM-Infrastructure-OSINT/shodan/queries/27-embedding-services.md`](https://github.com/Nicholas-Kloster/AI-LLM-Infrastructure-OSINT/blob/main/shodan/queries/27-embedding-services.md)
+
 ## [v1.6.0] — 2026-05-08
 
 BI/Dashboard tier (3 platforms) + Voice/Audio AI tier (10 platforms). Backward-compatible: no CLI, JSON schema, or existing-fingerprint output changes. Fingerprint count: 53 → 66.
