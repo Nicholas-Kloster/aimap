@@ -1132,7 +1132,24 @@ func matchFingerprints(openPorts []PortResult, timeout time.Duration, verbose bo
 				schemes = []string{"https", "http"}
 			}
 
+			// Filter fingerprints to those that list this port in DefaultPorts,
+			// or have no DefaultPorts restriction (empty = try on any port).
+			// Avoids probing all 69 fingerprints against every open port.
+			candidateFPs := Fingerprints[:0:0]
 			for _, fp := range Fingerprints {
+				if len(fp.DefaultPorts) == 0 {
+					candidateFPs = append(candidateFPs, fp)
+					continue
+				}
+				for _, dp := range fp.DefaultPorts {
+					if dp == port.Port {
+						candidateFPs = append(candidateFPs, fp)
+						break
+					}
+				}
+			}
+
+			for _, fp := range candidateFPs {
 				matched := false
 				for _, probe := range fp.Probes {
 					if matched {
