@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -176,6 +177,16 @@ func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool
 			result = enumDeepEval(client, svc)
 		case "LangSmith Self-Hosted":
 			result = enumLangSmith(client, svc)
+		case "Arize Phoenix":
+			result = enumPhoenix(client, svc)
+		case "Helicone Self-Hosted":
+			result = enumHelicone(client, svc)
+		case "Lunary":
+			result = enumLunary(client, svc)
+		case "OpenLIT":
+			result = enumOpenLIT(client, svc)
+		case "Pezzo":
+			result = enumPezzo(client, svc)
 		case "HuggingFace TEI":
 			result = enumTEI(client, svc)
 		case "infinity-embedding":
@@ -2294,6 +2305,261 @@ func enumLangSmith(c *http.Client, svc ServiceMatch) EnumResult {
 	r.Findings = append(r.Findings, Finding{
 		Category: "context", Title: "LangSmith stores LLM trace data",
 		Detail:   "This service contains full prompt/response history. Misconfigurations leak production conversation data.",
+		Severity: "info",
+	})
+
+	return r
+}
+
+// ── AI observability tier (Phase 3 of the 2026-05 sweep) ────────────
+
+// enumPhoenix probes Arize Phoenix for unauthenticated GraphQL access.
+// The product ships with PHOENIX_ENABLE_AUTH=False as the documented default,
+// which drives a 25% unauth rate at population scale (94 of 377 hosts on
+// 2026-05-10). The GraphQL endpoint at /graphql accepts unauth POST and
+// returns project + span data including prompt/response history.
+var phoenixVersionRe = regexp.MustCompile(`platformVersion\s*:\s*"([^"]+)"`)
+
+func enumPhoenix(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "unknown"
+
+	// Version extraction. Prefer the X-Phoenix-Server-Version response
+	// header (clean, no parsing) and fall back to the SPA bootstrap regex.
+	if _, hdrs, body, err := httpGET(c, b+"/"); err == nil {
+		if v, ok := hdrs["X-Phoenix-Server-Version"]; ok && v != "" {
+			r.Version = v
+		} else if m := phoenixVersionRe.FindSubmatch(body); len(m) == 2 {
+			r.Version = string(m[1])
+		}
+		if r.Version != "" {
+			r.Details = append(r.Details, "Phoenix version: "+r.Version)
+		}
+	}
+
+	// GraphQL introspection probe. Phoenix's /graphql accepts POST without
+	// auth when PHOENIX_ENABLE_AUTH is False. We probe with a minimal
+	// __typename query that fires for any GraphQL endpoint, then escalate
+	// to project enumeration if the type query succeeds.
+	typeProbe := []byte(`{"query":"{ __typename }"}`)
+	if st, _, body, err := httpPOST(c, b+"/graphql", "application/json", typeProbe); err == nil && st == 200 {
+		if bytes.Contains(body, []byte(`"__typename"`)) && bytes.Contains(body, []byte(`"Query"`)) {
+			// GraphQL is reachable. Probe projects to confirm unauth read.
+			projProbe := []byte(`{"query":"{ projects { edges { node { id name } } } }"}`)
+			if st2, _, body2, err2 := httpPOST(c, b+"/graphql", "application/json", projProbe); err2 == nil && st2 == 200 {
+				if bytes.Contains(body2, []byte(`"projects"`)) && bytes.Contains(body2, []byte(`"edges"`)) {
+					r.AuthStatus = "none"
+					// Count projects from the response
+					projCount := bytes.Count(body2, []byte(`"node":`))
+					if projCount > 0 {
+						r.RawData["project_count"] = projCount
+						r.Details = append(r.Details, fmt.Sprintf("Projects (unauth read): %d", projCount))
+					}
+					r.Findings = append(r.Findings, Finding{
+						Category: "data", Title: "Phoenix GraphQL accessible without authentication",
+						Detail:   "POST /graphql accepts unauthenticated queries. The full project list, span data, and prompt/response history are readable. Phoenix ships with PHOENIX_ENABLE_AUTH=False as the documented default; operators who deploy without explicitly setting PHOENIX_ENABLE_AUTH=True inherit this exposure. See https://docs.arize.com/phoenix/self-hosting/authentication for the env-var spec.",
+						Severity: "critical",
+					})
+				}
+			}
+
+			// On Phoenix 15.x+, the Secret type is exposed in the GraphQL
+			// schema with a readable .value field. Earlier majors (4-14)
+			// have CreateUserApiKeyMutation as the closest write primitive.
+			// We probe schema for Secret type to detect the worse case.
+			schemaProbe := []byte(`{"query":"{ __schema { types { name } } }"}`)
+			if st3, _, body3, err3 := httpPOST(c, b+"/graphql", "application/json", schemaProbe); err3 == nil && st3 == 200 {
+				if bytes.Contains(body3, []byte(`"Secret"`)) {
+					r.Findings = append(r.Findings, Finding{
+						Category: "secrets", Title: "Phoenix Secret type present in unauth GraphQL schema",
+						Detail:   "Phoenix 15.x+ ships a Secret type with a readable .value field via the secrets query. On instances with PHOENIX_ENABLE_AUTH=False this means stored LLM provider API keys (OpenAI, Anthropic, etc.) and arbitrary secrets are extractable. Probe: { secrets { edges { node { name value } } } }",
+						Severity: "critical",
+					})
+				}
+			}
+		}
+	}
+
+	r.Findings = append(r.Findings, Finding{
+		Category: "context", Title: "Phoenix stores LLM trace + prompt data",
+		Detail:   "Phoenix is an LLM observability platform: it captures and replays full prompt/response history per project. Trace data on an unauthenticated instance includes system prompts, user inputs, model outputs, and tool-call payloads.",
+		Severity: "info",
+	})
+
+	return r
+}
+
+// enumHelicone probes Helicone self-hosted instances. Helicone ships
+// auth-on-by-default (BetterAuth or Supabase) so we don't expect unauth
+// finds. The latent primitive is the literal BETTER_AUTH_SECRET value
+// committed to multiple .env.example files in the upstream repo - if an
+// operator copied the example verbatim without rotating, session-cookie
+// forgery is possible. We can't detect that remotely, but we surface the
+// platform identification so operators can audit their own deployments.
+func enumHelicone(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "unknown"
+
+	// Probe /signin for the BetterAuth dashboard. 200 means the dashboard
+	// exists. 307 from / to /signin means the auth middleware is active.
+	if st, _, body, err := httpGET(c, b+"/signin"); err == nil && st == 200 {
+		if bytes.Contains(body, []byte("helicone")) {
+			r.AuthStatus = "required (BetterAuth or Supabase)"
+			r.Details = append(r.Details, "Auth middleware active at /signin")
+		}
+	}
+
+	// Probe the API health endpoint for version banner if available.
+	if st, _, body, err := httpGET(c, b+"/api/v1/heartbeat"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["heartbeat"] = m
+			if v := jStr(m, "version"); v != "" {
+				r.Version = v
+			}
+		}
+	}
+
+	r.Findings = append(r.Findings, Finding{
+		Category: "config", Title: "Helicone self-hosted ships literal BETTER_AUTH_SECRET in .env.example",
+		Detail:   "Upstream repo's web/.env.example, valhalla/jawn/.env.example, and docker/.env.example all contain `BETTER_AUTH_SECRET=\"MKUcaeqyMD7UBkGeFYY5hwxKS1aB6Vsi\"` literally. Operators who copy an example file verbatim and don't rotate inherit a known session-cookie signing key, enabling session-token forgery for anyone with the literal value. Confirm rotation via: cat /path/to/.env | grep BETTER_AUTH_SECRET",
+		Severity: "high",
+	})
+	r.Findings = append(r.Findings, Finding{
+		Category: "config", Title: "Helicone bundled MinIO defaults to minioadmin:minioadmin",
+		Detail:   "helicone-all-in-one Docker image bundles MinIO at port 9080 with S3_ACCESS_KEY=minioadmin and S3_SECRET_KEY=minioadmin documented defaults. If port 9080 is reachable from outside, full read/write to the `request-response-storage` bucket (raw LLM request bodies + response bodies) is exposed. Audit: nmap port 9080 + `curl -H 'Authorization: AWS4...' http://target:9080/minio/health/live`.",
+		Severity: "high",
+	})
+	r.Findings = append(r.Findings, Finding{
+		Category: "context", Title: "Helicone stores LLM request + response bodies",
+		Detail:   "Helicone is an LLM observability + AI gateway product. It captures full prompt and response bodies (not just metadata) for every routed request. The bundled MinIO bucket request-response-storage is the storage backend.",
+		Severity: "info",
+	})
+
+	return r
+}
+
+// enumLunary probes Lunary self-hosted instances. Lunary ships auth-on
+// by default via JWT (NextAuth.js). /api/v1/health returns {status:OK}
+// unauth; protected routes return 401 with a clean JSON envelope. We
+// fingerprint the install + flag the JWT_SECRET=changeme placeholder
+// for operator audit (similar threat model to Langfuse's ADMIN_API_KEY).
+func enumLunary(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "unknown"
+
+	if st, _, body, err := httpGET(c, b+"/api/v1/health"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["health"] = m
+			if s := jStr(m, "status"); s == "OK" || s == "ok" {
+				r.Details = append(r.Details, "Lunary health: "+s)
+			}
+		}
+	}
+
+	// Probe a protected route. 401 = auth working. 200 = auth bypassed.
+	if st, _, body, err := httpGET(c, b+"/v1/projects"); err == nil {
+		if st == 200 {
+			r.AuthStatus = "none"
+			r.Findings = append(r.Findings, Finding{
+				Category: "data", Title: "Lunary projects accessible without authentication",
+				Detail:   "GET /v1/projects returned 200 without auth. Lunary stores LLM observability + prompt-management data per project. This indicates JWT auth was bypassed or disabled.",
+				Severity: "critical",
+			})
+		} else if st == 401 || st == 403 {
+			r.AuthStatus = fmt.Sprintf("required (HTTP %d)", st)
+			if bytes.Contains(body, []byte("Invalid access token")) {
+				r.Details = append(r.Details, "Lunary JWT auth enforced (standard 401 envelope)")
+			}
+		}
+	}
+
+	r.Findings = append(r.Findings, Finding{
+		Category: "config", Title: "Lunary self-hosted ships JWT_SECRET=changeme placeholder",
+		Detail:   "Upstream lunary-ai/lunary repo's .env.example contains JWT_SECRET=changeme as a placeholder (not a literal default like Helicone's BetterAuth secret). Operators who run with the literal `changeme` value can have JWT tokens forged. Confirm rotation via: grep JWT_SECRET in operator's .env. Better than Helicone's pattern but still worth auditing.",
+		Severity: "medium",
+	})
+	r.Findings = append(r.Findings, Finding{
+		Category: "context", Title: "Lunary stores LLM trace + prompt data",
+		Detail:   "Lunary is an open-source LLM observability + prompt management platform. Captures full conversation history, prompts, and run metadata per project.",
+		Severity: "info",
+	})
+
+	return r
+}
+
+// enumOpenLIT probes OpenLIT self-hosted instances. OpenLIT ships auth
+// via NextAuth.js with every API route wrapped in middleware that
+// redirects unauth requests to /login. Zero unauth at population scale
+// on 2026-05-10 (23 of 23 hosts auth-fronted). We surface the install
+// and check for the most common operator-side IP-shadow co-location:
+// node_exporter on 9100 (seen on 1 of 23 hosts).
+func enumOpenLIT(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "unknown"
+
+	// The aimap HTTP client follows redirects, so a NextAuth-protected /api/ping
+	// lands on /login after the 307. We detect auth posture by content: a
+	// followed body containing "callbackUrl" indicates the redirect chain
+	// hit the login page (auth is enforced). A 200 with actual JSON payload
+	// would indicate auth bypass.
+	if st, _, body, err := httpGET(c, b+"/api/ping"); err == nil && st == 200 {
+		if bytes.Contains(body, []byte("callbackUrl")) || bytes.Contains(body, []byte("login")) {
+			r.AuthStatus = "required (NextAuth middleware redirects to /login)"
+			r.Details = append(r.Details, "NextAuth.js middleware active")
+		} else if bytes.Contains(body, []byte(`"pong"`)) || bytes.Contains(body, []byte(`"ok"`)) {
+			r.AuthStatus = "none"
+			r.Findings = append(r.Findings, Finding{
+				Category: "data", Title: "OpenLIT /api/ping accessible without authentication",
+				Detail:   "GET /api/ping returned a JSON response payload without being redirected through the login flow. NextAuth.js middleware appears bypassed or disabled. Probe protected routes (/api/db/checkConnection, /api/prompt-hub) to confirm scope.",
+				Severity: "high",
+			})
+		}
+	}
+
+	r.Findings = append(r.Findings, Finding{
+		Category: "context", Title: "OpenLIT stores LLM observability + evaluation data",
+		Detail:   "OpenLIT is an open-source LLM/GenAI observability platform with built-in eval, playground, and prompt-management. Captures trace data, prompts, and evaluation runs.",
+		Severity: "info",
+	})
+
+	return r
+}
+
+// enumPezzo probes Pezzo self-hosted instances. Pezzo is a Nest.js
+// backend + Next.js frontend split (4200 frontend, 3000 backend).
+// Auth via JWT on the GraphQL backend; SPA-shadow on the frontend.
+// Population at 2026-05-10: 1 confirmed instance, 0 unauth.
+func enumPezzo(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "unknown"
+
+	if st, _, body, err := httpGET(c, b+"/"); err == nil && st == 200 {
+		if bytes.Contains(body, []byte("<title>Pezzo</title>")) {
+			r.Details = append(r.Details, "Pezzo SPA frontend identified")
+		}
+	}
+
+	// Probe the GraphQL backend (typically port 3000 if frontend is 4200).
+	// On a single-port deploy, /graphql is co-located.
+	gqlProbe := []byte(`{"query":"{ __typename }"}`)
+	if st, _, _, err := httpPOST(c, b+"/graphql", "application/json", gqlProbe); err == nil {
+		if st == 200 {
+			r.AuthStatus = "graphql reachable (auth posture unknown without write probe)"
+		} else if st == 401 || st == 403 {
+			r.AuthStatus = fmt.Sprintf("required (HTTP %d)", st)
+		} else if st == 405 {
+			r.AuthStatus = "graphql endpoint requires POST (auth posture unknown)"
+		}
+	}
+
+	r.Findings = append(r.Findings, Finding{
+		Category: "context", Title: "Pezzo stores LLM prompts + observability + dataset versions",
+		Detail:   "Pezzo is an open-source LLMOps platform (prompt management, observability, dataset versioning). Captures prompt versions, run history, and evaluation datasets.",
 		Severity: "info",
 	})
 

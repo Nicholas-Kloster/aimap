@@ -2,7 +2,39 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [v1.7.2] — 2026-05-09
+## [v1.8.0] - 2026-05-12
+
+AI observability tier completion. Backward-compatible. Fingerprint count: 69 -> 74. Enumerator count: 36 -> 41.
+
+This release closes Phase 3 of the 2026-05 AI observability sweep (see `~/recon/2026-05-10-llm-sweep/PHASE-PLAN.md`). Phase 1 surveyed 7 platforms at population scale; Phase 2 ran per-platform deep-dives and cross-cuts; Phase 3 productizes the per-platform fingerprints into aimap so the same posture audit runs on demand against any new target.
+
+### Added
+
+- **Arize Phoenix fingerprint + enumerator.** Phoenix ships with `PHOENIX_ENABLE_AUTH=False` as the documented default, driving a 25% unauth rate at population scale (94 of 377 hosts on 2026-05-10). The enumerator probes `/graphql` with a minimal `__typename` query, escalates to project enumeration on success, and probes the schema for the `Secret` type (Phoenix 15.x+, enables stored API key extraction). Version extracted from the `X-Phoenix-Server-Version` response header. Severity: `critical`.
+- **Helicone Self-Hosted fingerprint + enumerator.** Auth-on-by-default via BetterAuth or Supabase; zero unauth at population. Surfaces two latent primitives for operator self-audit: (1) the literal `BETTER_AUTH_SECRET="MKUcaeqyMD7UBkGeFYY5hwxKS1aB6Vsi"` value committed to three `.env.example` files upstream (session-cookie forgery if not rotated), and (2) the bundled `minioadmin:minioadmin` MinIO defaults on the `request-response-storage` bucket. Severity: `high`.
+- **Lunary fingerprint + enumerator.** Auth-on-by-default via JWT; `/api/v1/health` returns `{status:OK}` unauth, protected routes return 401. Surfaces the `JWT_SECRET=changeme` placeholder pattern for operator audit. Severity: `high`.
+- **OpenLIT fingerprint + enumerator.** Auth-on-by-default via NextAuth.js middleware; every API route redirects unauth requests through `/login?callbackUrl=...`. Detection probes follow the redirect chain and confirm middleware activity via body content. Severity: `high`.
+- **Pezzo fingerprint + enumerator.** Auth-on-by-default via Nest.js JWT; `/graphql` requires POST and is JWT-gated. SPA frontend at port 4200 with the title-tag signature. Severity: `high`.
+- Tool version bumped to `1.8.0` in reporter.go.
+
+### Coverage
+
+The five new enumerators complete the AI observability tier surveyed in the 2026-05-10 sweep. Combined with the existing Langfuse + LangSmith enumerators, aimap now fingerprints and deeply enumerates **7 of 7** AI observability platforms at population scale.
+
+Reproducing Phase 1's full Phoenix population sweep is now a single command:
+
+```bash
+aimap -list phoenix-candidates.txt -ports 6006,80,443,8000 -threads 50 -o phoenix-posture.json
+```
+
+### Methodology notes for future enumerator authors
+
+- aimap's HTTP client follows redirects up to 3 deep. Fingerprints that depend on status_code=307 will silently fail because the matcher sees the followed response, not the redirect. When fingerprinting a NextAuth-style middleware-protected service, probe for the post-redirect body content (e.g. `callbackUrl` query param, branded login page) instead of the 307 status code.
+- The `X-Phoenix-Server-Version` response header is a clean version source. Prefer response headers over SPA-bootstrap-config regex extraction when the platform exposes one.
+
+---
+
+## [v1.7.2] - 2026-05-09
 
 Port-filtered fingerprint matching in Phase 2. Backward-compatible performance fix.
 

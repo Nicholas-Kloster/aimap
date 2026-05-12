@@ -1103,6 +1103,100 @@ var Fingerprints = []Fingerprint{
 		},
 		Severity: "medium",
 	},
+	// === AI observability tier (Phase 3 of the 2026-05 sweep) ===
+	//
+	// Phoenix is the load-bearing one: 25% unauth rate at population scale
+	// (94 of 377 hosts on 2026-05-10) driven by PHOENIX_ENABLE_AUTH=False
+	// shipping default. The other four ship auth-on-by-default; we fingerprint
+	// them to surface latent primitives (default secrets, weak ADMIN keys).
+	{
+		Name:         "Arize Phoenix",
+		DefaultPorts: []int{6006, 80, 443, 8000},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "<title>Phoenix</title>"},
+				{Type: "body_contains", Value: "Arize Phoenix"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "platformVersion"},
+				{Type: "body_contains", Value: "Phoenix"},
+			}},
+		},
+		Severity: "critical",
+	},
+	{
+		Name:         "Helicone Self-Hosted",
+		DefaultPorts: []int{3000, 80, 443, 8585},
+		Probes: []Probe{
+			// Direct /signin probe - returns 200 with BetterAuth login page.
+			{Path: "/signin", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "_next/static"},
+				{Type: "body_contains", Value: "helicone"},
+			}},
+			// HTTP client follows the / -> /signin 307. After redirect we
+			// land on signin and the body still contains helicone branding.
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "_next/static"},
+				{Type: "body_contains", Value: "helicone"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "Lunary",
+		DefaultPorts: []int{3000, 80, 443},
+		Probes: []Probe{
+			{Path: "/api/v1/health", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "status"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "<title>Dashboard | Lunary</title>"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "OpenLIT",
+		DefaultPorts: []int{3000, 80, 443},
+		Probes: []Probe{
+			// The NextAuth middleware redirects /api/* to /login?callbackUrl=...
+			// Our HTTP client follows redirects, so we'll see the login page
+			// body. The login page contains the OpenLIT brand string.
+			{Path: "/api/ping", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "OpenLIT"},
+				{Type: "body_contains", Value: "callbackUrl"},
+			}},
+			{Path: "/login", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "OpenLIT"},
+				{Type: "body_contains", Value: "_next/static"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "Pezzo",
+		DefaultPorts: []int{4200, 3000, 80, 443},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "<title>Pezzo</title>"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "pezzo"},
+				{Type: "body_contains", Value: "<title>"},
+			}},
+		},
+		Severity: "high",
+	},
 }
 
 // ── Matching engine ─────────────────────────────────────────────────
