@@ -238,19 +238,48 @@ func printStats(rpt ScanReport) {
 	fmt.Printf("\n  Scan duration: %s\n", rpt.Summary.Duration)
 }
 
+// ── Adjacency printer ───────────────────────────────────────────────
+
+// printAdjacencies prints the ML-adjacency findings as a compact section
+// after the per-service deep-enum cards. Quiet if there are no adjacencies.
+func printAdjacencies(adj []AdjacencyMatch) {
+	if len(adj) == 0 {
+		return
+	}
+	fmt.Printf("\n  %s\n", bold("ML-ADJACENT INFRASTRUCTURE"))
+	fmt.Println("  " + dim(strings.Repeat("─", 58)))
+	fmt.Printf("  %s\n",
+		dim("data-tier ports on hosts running confirmed AI/ML services"))
+	fmt.Println()
+
+	for _, a := range adj {
+		sev := riskBadge(strings.ToLower(a.Severity))
+		fmt.Printf("  %s  %s:%d  %s  %s\n",
+			sev, a.Host, a.Port, bold(a.Service), dim("→ "+strings.Join(a.Adjacents, ", ")))
+		reason := a.Reason
+		if len(reason) > 90 {
+			reason = reason[:87] + "..."
+		}
+		fmt.Printf("       %s\n", dim(reason))
+	}
+}
+
 // ── Report builder ──────────────────────────────────────────────────
 
 func buildReport(hosts []string, portsPerHost int, openPorts []PortResult,
 	services []ServiceMatch, enumResults []EnumResult, duration time.Duration) ScanReport {
 
+	adjacencies := buildAdjacencies(services, openPorts)
+
 	rpt := ScanReport{
 		Tool:         "aimap",
-		ToolVersion:  "1.8.0",
+		ToolVersion:  "1.8.2",
 		Target:       strings.Join(hosts, ", "),
 		Timestamp:    time.Now().UTC().Format(time.RFC3339),
 		PortsScanned: len(hosts) * portsPerHost,
 		OpenPorts:    openPorts,
 		Services:     services,
+		Adjacencies:  adjacencies,
 		EnumResults:  enumResults,
 	}
 	rpt.Summary.TotalTargets = len(hosts)
@@ -276,6 +305,23 @@ func buildReport(hosts []string, portsPerHost int, openPorts []PortResult,
 			default:
 				rpt.Summary.Info++
 			}
+		}
+	}
+	// Adjacency matches count toward the severity rollup too — they are
+	// real findings with calibrated severity per the data-tier catalog.
+	for _, a := range adjacencies {
+		rpt.Summary.TotalFindings++
+		switch a.Severity {
+		case "critical":
+			rpt.Summary.Critical++
+		case "high":
+			rpt.Summary.High++
+		case "medium":
+			rpt.Summary.Medium++
+		case "low":
+			rpt.Summary.Low++
+		default:
+			rpt.Summary.Info++
 		}
 	}
 	return rpt

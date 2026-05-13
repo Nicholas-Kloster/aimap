@@ -155,6 +155,10 @@ func main() {
 		printServiceCard(er)
 	}
 
+	// ── ML adjacency (Insight #20) ───────────────────────────────
+	adjacencies := buildAdjacencies(services, openPorts)
+	printAdjacencies(adjacencies)
+
 	// ── Summary ──────────────────────────────────────────────────
 	printSummaryTable(enumResults)
 

@@ -127,15 +127,16 @@ type EnumResult struct {
 }
 
 type ScanReport struct {
-	Tool         string         `json:"tool"`
-	ToolVersion  string         `json:"version"`
-	Target       string         `json:"target"`
-	Timestamp    string         `json:"timestamp"`
-	PortsScanned int            `json:"ports_scanned"`
-	OpenPorts    []PortResult   `json:"open_ports"`
-	Services     []ServiceMatch `json:"services"`
-	EnumResults  []EnumResult   `json:"enum_results"`
-	Summary      Summary        `json:"summary"`
+	Tool         string           `json:"tool"`
+	ToolVersion  string           `json:"version"`
+	Target       string           `json:"target"`
+	Timestamp    string           `json:"timestamp"`
+	PortsScanned int              `json:"ports_scanned"`
+	OpenPorts    []PortResult     `json:"open_ports"`
+	Services     []ServiceMatch   `json:"services"`
+	Adjacencies  []AdjacencyMatch `json:"adjacencies,omitempty"`
+	EnumResults  []EnumResult     `json:"enum_results"`
+	Summary      Summary          `json:"summary"`
 }
 
 type Summary struct {
