@@ -909,8 +909,13 @@ var Fingerprints = []Fingerprint{
 	// endpoint is the OpenAI-compatible discriminator; some servers expose
 	// /asr instead. Multiple probes for full family coverage.
 	{
-		Name:         "Whisper ASR",
-		DefaultPorts: []int{9000, 8080, 7860, 8000},
+		Name: "Whisper ASR",
+		// Verified live 2026-05-13 against 37.75.9.88:9000.
+		// GET / returns 307 → /docs (FastAPI default). /docs HTML has the
+		// title but not the /asr path (that's only in /openapi.json). Added
+		// an explicit /openapi.json probe with the canonical title string
+		// from the upstream webservice.
+		DefaultPorts: []int{9000, 8080, 7860, 8000, 80, 443},
 		Probes: []Probe{
 			{Path: "/", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
@@ -918,7 +923,11 @@ var Fingerprints = []Fingerprint{
 			}},
 			{Path: "/docs", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
-				{Type: "body_contains", Value: "Whisper"},
+				{Type: "body_contains", Value: "whisper asr webservice"},
+			}},
+			{Path: "/openapi.json", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "whisper asr webservice"},
 				{Type: "body_contains", Value: "/asr"},
 			}},
 			{Path: "/inference", Matches: []MatchCond{
@@ -933,8 +942,16 @@ var Fingerprints = []Fingerprint{
 	// Hardened by status_code + body_contains on the speaker-listing endpoint
 	// to avoid colliding with random "tts" hits in marketing copy.
 	{
-		Name:         "Coqui XTTS",
-		DefaultPorts: []int{8020, 5002, 8000},
+		Name: "Coqui XTTS",
+		// Coqui XTTS deployments split into two shapes:
+		//   1. Upstream-style API exposing /api/tts/speakers (Flask)
+		//   2. Custom HTML UI fork ("XTTS - Generate Speech from Text" /
+		//      similar localized title + tts-form / tts-generator-card markup)
+		// Verified live 2026-05-13 against 195.87.80.179:8040 (Turkish
+		// custom UI). The "coqui" brand string is sometimes absent in
+		// custom forks. The HTML probe anchors on the title pattern +
+		// a tts-form class.
+		DefaultPorts: []int{8020, 5002, 8000, 8040, 80, 443},
 		Probes: []Probe{
 			{Path: "/api/tts/speakers", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
@@ -944,6 +961,11 @@ var Fingerprints = []Fingerprint{
 				{Type: "status_code", Value: "200"},
 				{Type: "body_contains", Value: "XTTS"},
 				{Type: "body_contains", Value: "coqui"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "<title>xtts"},
+				{Type: "body_contains", Value: "tts-form"},
 			}},
 		},
 		Severity: "medium",
@@ -970,8 +992,14 @@ var Fingerprints = []Fingerprint{
 	// the specific project name. Severity high because this is the
 	// fraud-relevant class.
 	{
-		Name:         "RVC Voice Cloning WebUI",
-		DefaultPorts: []int{7865, 7860, 7897},
+		Name: "RVC Voice Cloning WebUI",
+		// Verified live 2026-05-13 against 180.184.96.130:8055.
+		// Modern Gradio builds of RVC don't ship the full upstream
+		// "Retrieval-based-Voice-Conversion" string; the og:title
+		// and gradio_config markdown header carry "RVC WebUI" instead.
+		// Two conjuncts (og:title RVC WebUI + gradio_config) keep this
+		// from matching arbitrary Gradio apps that mention RVC.
+		DefaultPorts: []int{7865, 7860, 7897, 8055, 80, 443},
 		Probes: []Probe{
 			{Path: "/", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
@@ -984,6 +1012,11 @@ var Fingerprints = []Fingerprint{
 			{Path: "/", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
 				{Type: "body_contains", Value: "Applio"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: `content="RVC WebUI"`},
+				{Type: "body_contains", Value: "gradio_config"},
 			}},
 		},
 		Severity: "high",
@@ -1038,12 +1071,22 @@ var Fingerprints = []Fingerprint{
 	// Pipecat (Daily.co) — real-time voice-agent framework. Severity high
 	// because abuse is "outbound call automation" not just compute theft.
 	{
-		Name:         "Pipecat Voice Agent",
-		DefaultPorts: []int{7860, 8000, 8080},
+		Name: "Pipecat Voice Agent",
+		// Verified live 2026-05-13 against 18.142.164.147:80 (Pipecat UI).
+		// Real deployments redirect / → /client/ and serve <title>Pipecat
+		// UI</title>. Single-word body_contains "pipecat" was over-matching
+		// risk; tighten to require the title plus the Vite client asset
+		// path. Port 80 added to DefaultPorts.
+		DefaultPorts: []int{7860, 8000, 8080, 80, 443},
 		Probes: []Probe{
 			{Path: "/", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
-				{Type: "body_contains", Value: "pipecat"},
+				{Type: "body_contains", Value: "<title>pipecat"},
+				{Type: "body_contains", Value: "assets/index-"},
+			}},
+			{Path: "/client/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "<title>pipecat"},
 			}},
 			{Path: "/health", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
@@ -1069,10 +1112,18 @@ var Fingerprints = []Fingerprint{
 		Severity: "high",
 	},
 
-	// LiveKit Agents — real-time AV pipeline framework.
+	// LiveKit — real-time AV pipeline framework + Meet demo app.
 	{
-		Name:         "LiveKit Agents",
-		DefaultPorts: []int{7880, 8080, 3000},
+		Name: "LiveKit Agents",
+		// Three deployment shapes:
+		//   1. Agent runner serving its own HTML (rare; "livekit-agents")
+		//   2. LiveKit Server admin UI ("livekit-server")
+		//   3. LiveKit Meet demo app (dominant — 992 Shodan hits 2026-05-13).
+		// Verified live 2026-05-13 against 143.20.37.151:3002 (LiveKit Meet).
+		// The Meet demo bundles /images/livekit-meet-home.svg as a unique
+		// asset path; combined with the Next.js _next/static path this is
+		// distinct enough to avoid bare-brand mentions.
+		DefaultPorts: []int{7880, 8080, 3000, 3002, 80, 443},
 		Probes: []Probe{
 			{Path: "/", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
@@ -1081,6 +1132,11 @@ var Fingerprints = []Fingerprint{
 			{Path: "/", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
 				{Type: "body_contains", Value: "livekit-server"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "livekit-meet-home"},
+				{Type: "body_contains", Value: "_next/static"},
 			}},
 		},
 		Severity: "medium",
