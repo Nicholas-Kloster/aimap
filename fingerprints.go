@@ -1329,10 +1329,8 @@ func matchFingerprints(openPorts []PortResult, timeout time.Duration, verbose bo
 	for _, port := range openPorts {
 		port := port
 		wg.Add(1)
-		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
-			defer func() { <-sem }()
 
 			// Determine scheme(s) to try. Always include both so that a TLS port
 			// that also speaks plaintext (e.g. OpenHands admin console) can match
@@ -1374,58 +1372,77 @@ func matchFingerprints(openPorts []PortResult, timeout time.Duration, verbose bo
 				}
 			}
 
+			// Parallelize FP candidates within this port. Iter 11.
+			//
+			// Without this, a port with 21 candidate FPs (e.g. port 80 after
+			// the iter 8d/9 catalog-wide DefaultPorts widening) ran each FP
+			// sequentially per port-goroutine. The -threads flag's worker
+			// pool was idle while the matcher walked the candidate list
+			// serially. Wall time per port grew from ~10s to ~80s.
+			//
+			// We spawn one inner goroutine per FP, gated by the same
+			// outer semaphore so total concurrency stays bounded.
+			var fpWG sync.WaitGroup
 			for _, fp := range candidateFPs {
-				matched := false
-				for _, probe := range fp.Probes {
-					if matched {
-						break
-					}
-					for _, scheme := range schemes {
-						url := fmt.Sprintf("%s://%s:%d%s", scheme, port.Host, port.Port, probe.Path)
-						status, headers, body, err := httpGET(client, url)
-						if err != nil {
-							continue
+				fp := fp
+				fpWG.Add(1)
+				sem <- struct{}{}
+				go func() {
+					defer fpWG.Done()
+					defer func() { <-sem }()
+					matched := false
+					for _, probe := range fp.Probes {
+						if matched {
+							break
 						}
+						for _, scheme := range schemes {
+							url := fmt.Sprintf("%s://%s:%d%s", scheme, port.Host, port.Port, probe.Path)
+							status, headers, body, err := httpGET(client, url)
+							if err != nil {
+								continue
+							}
 
-						allMatch := true
-						for _, mc := range probe.Matches {
-							if !evalMatch(mc, status, headers, body) {
-								allMatch = false
+							allMatch := true
+							for _, mc := range probe.Matches {
+								if !evalMatch(mc, status, headers, body) {
+									allMatch = false
+									break
+								}
+							}
+
+							if allMatch {
+								baseURL := fmt.Sprintf("%s://%s:%d", scheme, port.Host, port.Port)
+								sm := ServiceMatch{
+									Host:      port.Host,
+									Port:      port.Port,
+									Service:   fp.Name,
+									Severity:  fp.Severity,
+									BaseURL:   baseURL,
+									MatchPath: probe.Path,
+								}
+								if json.Valid(body) {
+									sm.MatchBody = json.RawMessage(body)
+								}
+								if parsed, err := parseJSON(body); err == nil {
+									if v := jStr(parsed, "version"); v != "" {
+										sm.Version = v
+									}
+								}
+								if verbose {
+									fmt.Printf("    %s %s on %s:%d via %s\n",
+										green("[match]"), fp.Name, port.Host, port.Port, probe.Path)
+								}
+								mu.Lock()
+								matches = append(matches, sm)
+								mu.Unlock()
+								matched = true
 								break
 							}
 						}
-
-						if allMatch {
-							baseURL := fmt.Sprintf("%s://%s:%d", scheme, port.Host, port.Port)
-							sm := ServiceMatch{
-								Host:      port.Host,
-								Port:      port.Port,
-								Service:   fp.Name,
-								Severity:  fp.Severity,
-								BaseURL:   baseURL,
-								MatchPath: probe.Path,
-							}
-							if json.Valid(body) {
-								sm.MatchBody = json.RawMessage(body)
-							}
-							if parsed, err := parseJSON(body); err == nil {
-								if v := jStr(parsed, "version"); v != "" {
-									sm.Version = v
-								}
-							}
-							if verbose {
-								fmt.Printf("    %s %s on %s:%d via %s\n",
-									green("[match]"), fp.Name, port.Host, port.Port, probe.Path)
-							}
-							mu.Lock()
-							matches = append(matches, sm)
-							mu.Unlock()
-							matched = true
-							break
-						}
 					}
-				}
+				}()
 			}
+			fpWG.Wait()
 		}()
 	}
 	wg.Wait()
