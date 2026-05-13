@@ -29,7 +29,7 @@ func main() {
 
 	var hosts []string
 	if *target != "" {
-		hosts = parseTargets(*target)
+		hosts = parseTargetsVerbose(*target, os.Stderr)
 	}
 	if *list != "" {
 		f, err := os.Open(*list)
@@ -40,9 +40,10 @@ func main() {
 		sc := bufio.NewScanner(f)
 		for sc.Scan() {
 			line := strings.TrimSpace(sc.Text())
-			if line != "" && !strings.HasPrefix(line, "#") {
-				hosts = append(hosts, parseTargets(line)...)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
 			}
+			hosts = append(hosts, parseTargetsVerbose(line, os.Stderr)...)
 		}
 		f.Close()
 	}
@@ -100,9 +101,18 @@ func main() {
 	if !*verbose {
 		stopCh = startProgress(&progress, total)
 	}
+	// Watchdog: warn on stderr if scan stalls. Threshold scales with the
+	// connection timeout — three failed connection attempts' worth of time
+	// is a reasonable "something's wrong" signal.
+	stallThreshold := 12 * (*timeout)
+	if stallThreshold < 30*time.Second {
+		stallThreshold = 30 * time.Second
+	}
+	watchdogStop := startWatchdog(&progress, stallThreshold, os.Stderr)
 
 	openPorts := scanPorts(targets, *timeout, *threads, *verbose, &progress)
 
+	close(watchdogStop)
 	if !*verbose {
 		close(stopCh)
 		time.Sleep(20 * time.Millisecond) // let goroutine exit

@@ -3,11 +3,62 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync/atomic"
 	"time"
 )
+
+// startWatchdog returns a stop channel; close it to halt the watcher.
+//
+// The watcher polls progress and emits a one-line warning to w if the
+// counter does not advance for `stall` duration. On resumed progress the
+// timer resets; the warning fires at most once per stall window.
+//
+// Rationale: aimap can silently hang on pathological inputs (DNS-slow
+// hostnames, malformed addresses that take 30s to fail kernel-side). The
+// watchdog converts a 3-hour zombie scan into a 60-second observable
+// warning. See Methodology Insight discussion in CHANGELOG.
+func startWatchdog(progress *atomic.Int64, stall time.Duration, w io.Writer) chan struct{} {
+	stop := make(chan struct{})
+	go func() {
+		last := progress.Load()
+		lastChangedAt := time.Now()
+		warned := false
+
+		t := time.NewTicker(stall / 2)
+		if t == nil { // pathological stall=0; ticker would panic
+			return
+		}
+		defer t.Stop()
+
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				cur := progress.Load()
+				if cur != last {
+					last = cur
+					lastChangedAt = time.Now()
+					warned = false
+					continue
+				}
+				if !warned && time.Since(lastChangedAt) >= stall {
+					fmt.Fprintf(w,
+						"\n[!] watchdog: no progress for %s "+
+							"(scanned %d so far). "+
+							"DNS-slow hosts or unreachable targets are the usual cause; "+
+							"consider killing and verifying the target list.\n",
+						stall, cur)
+					warned = true
+				}
+			}
+		}
+	}()
+	return stop
+}
 
 // ── ASCII banner ────────────────────────────────────────────────────
 

@@ -149,11 +149,19 @@ var Fingerprints = []Fingerprint{
 
 	// ── ML platforms ────────────────────────────────────────────
 	{
+		// MLflow's tracking server. The /api/2.0/mlflow/experiments/list
+		// endpoint that earlier versions exposed has been removed upstream;
+		// /experiments/search (POST) replaced it. We fingerprint via the GET /
+		// index, which serves a known HTML skeleton with <title>MLflow</title>
+		// and a /static-files/manifest.json link. Two conjunctive conditions
+		// keep this from matching arbitrary gunicorn apps.
 		Name:         "MLflow",
 		DefaultPorts: []int{5000},
 		Probes: []Probe{
-			{Path: "/api/2.0/mlflow/experiments/list", Matches: []MatchCond{
-				{Type: "json_field", Field: "experiments"},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "<title>mlflow</title>"},
+				{Type: "body_contains", Value: "static-files/manifest.json"},
 			}},
 		},
 		Severity: "high",
@@ -1299,6 +1307,37 @@ func matchFingerprints(openPorts []PortResult, timeout time.Duration, verbose bo
 	}
 	wg.Wait()
 	return matches
+}
+
+// matchProbe is a test-friendly helper that evaluates a Probe's match
+// conditions against a captured PortResult, without making a network call.
+// Used by fingerprint unit tests; in production the matcher fetches a fresh
+// response per probe path.
+//
+// For the special-case probe path "/" or "", the captured BodySnippet and
+// Headers from the original port scan are used directly.
+func matchProbe(probe Probe, pr PortResult) bool {
+	if probe.Path != "/" && probe.Path != "" {
+		// Non-root probes require a real network fetch; this helper can't.
+		return false
+	}
+	body := []byte(pr.BodySnippet)
+	headers := pr.Headers
+	if headers == nil {
+		headers = map[string]string{}
+		if pr.Server != "" {
+			headers["Server"] = pr.Server
+		}
+		if pr.ContentType != "" {
+			headers["Content-Type"] = pr.ContentType
+		}
+	}
+	for _, mc := range probe.Matches {
+		if !evalMatch(mc, pr.StatusCode, headers, body) {
+			return false
+		}
+	}
+	return len(probe.Matches) > 0
 }
 
 func evalMatch(mc MatchCond, status int, headers map[string]string, body []byte) bool {

@@ -265,11 +265,94 @@ func jFloat(m map[string]interface{}, key string) float64 {
 
 // ── IP / target parsing ─────────────────────────────────────────────
 
+// parseTargetsVerbose is parseTargets that emits a one-line stderr-style
+// warning to w when it strips a non-canonical input form (a :port suffix on
+// a non-bracketed host, or a comma-joined list). Bracketed IPv6, CIDR, and
+// bare inputs are silent.
+func parseTargetsVerbose(input string, w io.Writer) []string {
+	original := strings.TrimSpace(input)
+	if original == "" {
+		return nil
+	}
+
+	// Detect "needs cleanup" forms before parsing.
+	bracketed := strings.HasPrefix(original, "[")
+	hasComma := strings.Contains(original, ",")
+	hasColonPort := false
+	if !bracketed && strings.Count(original, ":") == 1 && !strings.Contains(original, "/") {
+		// One colon, not a CIDR, not bracketed IPv6 — looks like host:port.
+		hasColonPort = true
+	}
+
+	hosts := parseTargets(original)
+
+	if hasComma {
+		fmt.Fprintf(w, "[!] target %q is comma-joined; split into %d entries\n",
+			original, len(hosts))
+	} else if hasColonPort {
+		fmt.Fprintf(w, "[!] target %q has a :port suffix; aimap uses -ports separately; using %q\n",
+			original, strings.Join(hosts, ","))
+	}
+	return hosts
+}
+
+// parseTargets normalizes a target spec to a flat list of bare hosts.
+//
+// Accepts:
+//   - bare IPv4         "192.0.2.10"          → ["192.0.2.10"]
+//   - bare hostname     "api.example.com"      → ["api.example.com"]
+//   - CIDR              "192.0.2.0/24"         → expanded
+//   - bare IPv6         "2001:db8::1"          → ["2001:db8::1"]
+//   - bracketed IPv6    "[2001:db8::1]:8080"   → ["2001:db8::1"] (port stripped)
+//   - IPv4 with port    "192.0.2.10:5000"      → ["192.0.2.10"]  (port stripped)
+//   - host with port    "api.example.com:8080" → ["api.example.com"] (port stripped)
+//   - comma-joined      "a,b,c"                → ["a","b","c"]  (per element parsed)
+//
+// Rationale: the load-bearing reason this is defensive is that aimap's port
+// list is supplied separately via -ports. A target spec carrying its own
+// port (a common operator typo from tool-to-tool piping) used to silently
+// produce malformed addresses like "1.2.3.4:5000:80" that hang on DNS for
+// 10–30s per probe.
 func parseTargets(input string) []string {
 	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil
+	}
+
+	// Comma-joined list: split and recurse per element.
+	if strings.Contains(input, ",") {
+		var out []string
+		for _, part := range strings.Split(input, ",") {
+			out = append(out, parseTargets(part)...)
+		}
+		return out
+	}
+
+	// CIDR: expand and return.
 	if strings.Contains(input, "/") {
 		return expandCIDR(input)
 	}
+
+	// Bracketed IPv6 (with or without trailing port): unwrap the brackets.
+	if strings.HasPrefix(input, "[") {
+		if end := strings.Index(input, "]"); end > 1 {
+			return []string{input[1:end]}
+		}
+		// Malformed: leave as-is; net.Dial will error.
+		return []string{input}
+	}
+
+	// Bare IPv6: presence of two or more colons and no brackets means we
+	// treat the whole thing as an address, not host:port.
+	if strings.Count(input, ":") >= 2 {
+		return []string{input}
+	}
+
+	// IPv4 or hostname with optional :port suffix.
+	if idx := strings.LastIndex(input, ":"); idx > 0 {
+		return []string{input[:idx]}
+	}
+
 	return []string{input}
 }
 
