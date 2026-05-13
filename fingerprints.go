@@ -11,7 +11,14 @@ import (
 // ── Fingerprint types ───────────────────────────────────────────────
 
 type MatchCond struct {
-	Type  string // status_code, body_contains, json_field, json_array, header_contains
+	// Type: status_code, body_contains, body_not_contains, json_field,
+	// json_array, header_contains.
+	//
+	// body_not_contains is an anti-match: the probe FAILS if the substring
+	// appears in the body. Used to exclude false-positive shapes (e.g.,
+	// a marketing-site reflection that contains the brand name but isn't a
+	// self-hosted instance).
+	Type  string
 	Field string
 	Value string
 }
@@ -234,11 +241,16 @@ var Fingerprints = []Fingerprint{
 		Name:         "Open WebUI",
 		DefaultPorts: []int{3000, 8080},
 		Probes: []Probe{
+			// Conjunctive probe: title plus a unique-to-Open-WebUI asset path.
+			// Single-word brand mentions ("open-webui" or "Open WebUI"
+			// anywhere in the body) used to fire alone, which over-matched
+			// blog posts, tutorials, and marketing reflections that referenced
+			// the project. The /static/loader.js path is specific to the
+			// Open WebUI deployment, not the brand.
 			{Path: "/", Matches: []MatchCond{
-				{Type: "body_contains", Value: "Open WebUI"},
-			}},
-			{Path: "/", Matches: []MatchCond{
-				{Type: "body_contains", Value: "open-webui"},
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "<title>open webui</title>"},
+				{Type: "body_contains", Value: "/static/loader.js"},
 			}},
 		},
 		Severity: "medium",
@@ -1139,10 +1151,16 @@ var Fingerprints = []Fingerprint{
 		DefaultPorts: []int{3000, 80, 443, 8585},
 		Probes: []Probe{
 			// Direct /signin probe - returns 200 with BetterAuth login page.
+			// The body_not_contains anti-match rejects the marketing-site
+			// reflection observed live 2026-05-13 — helicone.ai's static
+			// pages ship a hardcoded <link rel="canonical" href="https://
+			// www.helicone.ai/">, while a real self-hosted instance does
+			// not.
 			{Path: "/signin", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
 				{Type: "body_contains", Value: "_next/static"},
 				{Type: "body_contains", Value: "helicone"},
+				{Type: "body_not_contains", Value: `canonical" href="https://www.helicone.ai/"`},
 			}},
 			// HTTP client follows the / -> /signin 307. After redirect we
 			// land on signin and the body still contains helicone branding.
@@ -1150,6 +1168,7 @@ var Fingerprints = []Fingerprint{
 				{Type: "status_code", Value: "200"},
 				{Type: "body_contains", Value: "_next/static"},
 				{Type: "body_contains", Value: "helicone"},
+				{Type: "body_not_contains", Value: `canonical" href="https://www.helicone.ai/"`},
 			}},
 		},
 		Severity: "high",
@@ -1346,6 +1365,8 @@ func evalMatch(mc MatchCond, status int, headers map[string]string, body []byte)
 		return fmt.Sprintf("%d", status) == mc.Value
 	case "body_contains":
 		return strings.Contains(strings.ToLower(string(body)), strings.ToLower(mc.Value))
+	case "body_not_contains":
+		return !strings.Contains(strings.ToLower(string(body)), strings.ToLower(mc.Value))
 	case "json_field":
 		if m, err := parseJSON(body); err == nil {
 			return jHas(m, mc.Field)
