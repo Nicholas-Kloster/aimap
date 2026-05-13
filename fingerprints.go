@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -1254,6 +1255,12 @@ var Fingerprints = []Fingerprint{
 
 // ── Matching engine ─────────────────────────────────────────────────
 
+// scanAllFingerprints is set by the -scan-all-fingerprints CLI flag. When
+// true, the DefaultPorts filter is bypassed and every fingerprint is
+// probed against every open port. Trades ~30x more HTTP requests for the
+// ability to catch services running on non-canonical ports.
+var scanAllFingerprints = false
+
 func matchFingerprints(openPorts []PortResult, timeout time.Duration, verbose bool, threads int) []ServiceMatch {
 	client := newHTTPClient(timeout)
 	var (
@@ -1282,17 +1289,32 @@ func matchFingerprints(openPorts []PortResult, timeout time.Duration, verbose bo
 			// Filter fingerprints to those that list this port in DefaultPorts,
 			// or have no DefaultPorts restriction (empty = try on any port).
 			// Avoids probing all 69 fingerprints against every open port.
+			// -scan-all-fingerprints bypasses this filter — useful for hosts
+			// running services on non-canonical ports.
 			candidateFPs := Fingerprints[:0:0]
-			for _, fp := range Fingerprints {
-				if len(fp.DefaultPorts) == 0 {
-					candidateFPs = append(candidateFPs, fp)
-					continue
-				}
-				for _, dp := range fp.DefaultPorts {
-					if dp == port.Port {
+			if scanAllFingerprints {
+				candidateFPs = append(candidateFPs, Fingerprints...)
+			} else {
+				for _, fp := range Fingerprints {
+					if len(fp.DefaultPorts) == 0 {
 						candidateFPs = append(candidateFPs, fp)
-						break
+						continue
 					}
+					for _, dp := range fp.DefaultPorts {
+						if dp == port.Port {
+							candidateFPs = append(candidateFPs, fp)
+							break
+						}
+					}
+				}
+				// Emit a one-line stderr warning if the open port has zero
+				// FP candidates — a hint to the user that they may want to
+				// re-run with -scan-all-fingerprints.
+				if len(candidateFPs) == 0 && !verbose {
+					fmt.Fprintf(os.Stderr,
+						"\n[!] no FP candidates for %s:%d (port not in any DefaultPorts list); "+
+							"re-run with -scan-all-fingerprints to probe exhaustively\n",
+						port.Host, port.Port)
 				}
 			}
 

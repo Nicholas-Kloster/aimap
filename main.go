@@ -21,7 +21,12 @@ func main() {
 	threads := flag.Int("threads", 20, "Concurrent scan threads")
 	output := flag.String("o", "", "JSON report output file")
 	verbose := flag.Bool("v", false, "Verbose output")
+	scanAll := flag.Bool("scan-all-fingerprints", false,
+		"Probe every fingerprint against every open port (bypasses DefaultPorts filter). "+
+			"Use when services may be on non-canonical ports; trades ~30x more requests for thorough coverage.")
 	flag.Parse()
+
+	scanAllFingerprints = *scanAll
 
 	if *target == "" && flag.NArg() > 0 {
 		*target = flag.Arg(0)
