@@ -88,7 +88,7 @@ var Fingerprints = []Fingerprint{
 	},
 	{
 		Name:         "vLLM",
-		DefaultPorts: []int{8000},
+		DefaultPorts: []int{8000, 80, 443},
 		Probes: []Probe{
 			{Path: "/v1/models", Matches: []MatchCond{
 				{Type: "body_contains", Value: "vllm"},
@@ -211,13 +211,19 @@ var Fingerprints = []Fingerprint{
 
 	// ── Orchestration / UI ──────────────────────────────────────
 	{
-		Name:         "LangServe",
-		DefaultPorts: []int{8000},
+		Name: "LangServe",
+		// Default upstream is :8000 (FastAPI), but production hosts often
+		// front via nginx/Traefik on 80/443. Field-validated 2026-05-13:
+		// 3.234.68.99:443 served the genai-langserve FastAPI/Swagger UI
+		// and the FP was filtered out by over-narrow DefaultPorts.
+		DefaultPorts: []int{8000, 80, 443, 8080},
 		Probes: []Probe{
 			{Path: "/docs", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
 				{Type: "body_contains", Value: "langserve"},
 			}},
 			{Path: "/openapi.json", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
 				{Type: "body_contains", Value: "langserve"},
 			}},
 		},
@@ -225,7 +231,7 @@ var Fingerprints = []Fingerprint{
 	},
 	{
 		Name:         "Flowise",
-		DefaultPorts: []int{3000},
+		DefaultPorts: []int{3000, 80, 443},
 		Probes: []Probe{
 			{Path: "/api/v1/flows", Matches: []MatchCond{
 				{Type: "json_array"},
@@ -256,18 +262,30 @@ var Fingerprints = []Fingerprint{
 		Severity: "medium",
 	},
 	{
-		Name:         "SillyTavern",
+		Name: "SillyTavern",
+		// Pre-1.12 SillyTavern returned 401 with WWW-Authenticate:
+		// SillyTavern. The modern build (verified 2026-05-13 against
+		// 115.120.242.5:8000) serves an HTML login page directly. The
+		// /css/st-tailwind.css path is the project-specific asset
+		// signature; the title alone over-matches tutorial/blog content.
 		DefaultPorts: []int{8000, 8001},
 		Probes: []Probe{
 			{Path: "/", Matches: []MatchCond{
-				{Type: "header_contains", Field: "Www-Authenticate", Value: "SillyTavern"},
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "<title>sillytavern</title>"},
+				{Type: "body_contains", Value: "css/st-tailwind.css"},
+			}},
+			{Path: "/login", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "<title>sillytavern</title>"},
+				{Type: "body_contains", Value: "css/st-tailwind.css"},
 			}},
 		},
 		Severity: "medium",
 	},
 	{
 		Name:         "LiteLLM",
-		DefaultPorts: []int{4000},
+		DefaultPorts: []int{4000, 80, 443},
 		Probes: []Probe{
 			{Path: "/health", Matches: []MatchCond{
 				{Type: "body_contains", Value: "litellm"},
@@ -310,7 +328,7 @@ var Fingerprints = []Fingerprint{
 	},
 	{
 		Name:         "Langfuse",
-		DefaultPorts: []int{3000},
+		DefaultPorts: []int{3000, 80, 443},
 		Probes: []Probe{
 			{Path: "/api/public/health", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
@@ -342,7 +360,7 @@ var Fingerprints = []Fingerprint{
 	},
 	{
 		Name:         "BentoML",
-		DefaultPorts: []int{3000},
+		DefaultPorts: []int{3000, 80, 443},
 		Probes: []Probe{
 			{Path: "/docs.json", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
@@ -405,7 +423,7 @@ var Fingerprints = []Fingerprint{
 	},
 	{
 		Name:         "Apache Airflow",
-		DefaultPorts: []int{8080},
+		DefaultPorts: []int{8080, 80, 443},
 		Probes: []Probe{
 			{Path: "/api/v1/health", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
@@ -478,7 +496,7 @@ var Fingerprints = []Fingerprint{
 	},
 	{
 		Name:         "Apache Superset",
-		DefaultPorts: []int{8088},
+		DefaultPorts: []int{8088, 80, 443, 8080},
 		Probes: []Probe{
 			{Path: "/api/v1/", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
@@ -503,11 +521,16 @@ var Fingerprints = []Fingerprint{
 
 	// ── Observability / infra co-deployed with AI stacks ───────
 	{
-		Name:         "Grafana",
-		DefaultPorts: []int{3000},
+		Name: "Grafana",
+		// Grafana's upstream default is :3000, but production deployments
+		// almost always front it via nginx/Traefik on 80/443. Field-validated
+		// 2026-05-13 against 141.147.71.47:443 which exposes the standard
+		// /api/health JSON.
+		DefaultPorts: []int{3000, 80, 443},
 		Probes: []Probe{
 			{Path: "/api/health", Matches: []MatchCond{
 				{Type: "json_field", Field: "database"},
+				{Type: "json_field", Field: "version"},
 			}},
 		},
 		Severity: "medium",
@@ -558,7 +581,7 @@ var Fingerprints = []Fingerprint{
 	},
 	{
 		Name:         "n8n",
-		DefaultPorts: []int{5678},
+		DefaultPorts: []int{5678, 80, 443},
 		Probes: []Probe{
 			{Path: "/rest/active-workflows", Matches: []MatchCond{
 				{Type: "json_field", Field: "data"},
@@ -585,8 +608,11 @@ var Fingerprints = []Fingerprint{
 		Severity: "critical",
 	},
 	{
-		Name:         "Mem0",
-		DefaultPorts: []int{8888},
+		Name: "Mem0",
+		// Default is 8888 in upstream docs, but field-validated 2026-05-13
+		// against 45.77.183.19:8000 and other Shodan hits that run Mem0
+		// behind uvicorn on the standard FastAPI port.
+		DefaultPorts: []int{8888, 8000, 8080},
 		Probes: []Probe{
 			{Path: "/docs", Matches: []MatchCond{
 				{Type: "body_contains", Value: "Mem0 REST APIs"},
