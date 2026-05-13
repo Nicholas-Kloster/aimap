@@ -200,11 +200,23 @@ var Fingerprints = []Fingerprint{
 		Severity: "medium",
 	},
 	{
-		Name:         "Ray Serve",
-		DefaultPorts: []int{8000},
+		Name: "Ray Serve",
+		// Verified live 2026-05-13 against 16.52.175.212:80. Operators
+		// often expose Ray Serve as a custom REST endpoint at / rather
+		// than the upstream /api/serve/deployments/ admin path. The
+		// distinctive body signal is "Ray Serve" in the root JSON, anchored
+		// with json_field "message" to avoid matching random JSON with
+		// the word "ray" or "serve".
+		DefaultPorts: []int{8000, 80, 443},
 		Probes: []Probe{
 			{Path: "/api/serve/deployments/", Matches: []MatchCond{
 				{Type: "json_field", Field: "deployments"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "header_contains", Field: "Content-Type", Value: "application/json"},
+				{Type: "body_contains", Value: "Ray Serve"},
+				{Type: "body_contains", Value: "message"},
 			}},
 		},
 		Severity: "medium",
@@ -658,8 +670,12 @@ var Fingerprints = []Fingerprint{
 	// LiveChat ≠ DeepEval, EDocs ≠ DeepEval — see ai-safety-eval-cloud-survey
 	// methodology correction 2026-05-05).
 	{
-		Name:         "Promptfoo",
-		DefaultPorts: []int{15500, 5000, 3000},
+		Name: "Promptfoo",
+		// Verified live 2026-05-13 against 38.105.232.166:3000.
+		// Some Promptfoo deployments ship only the SPA front-end without
+		// a mounted /api/* — the canonical HTML has <title>promptfoo</title>
+		// + a /promptfoo/favicon.png unique asset path.
+		DefaultPorts: []int{15500, 5000, 3000, 80, 443},
 		Probes: []Probe{
 			{Path: "/api/health", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
@@ -669,6 +685,11 @@ var Fingerprints = []Fingerprint{
 			{Path: "/api/eval", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
 				{Type: "json_array"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "<title>promptfoo</title>"},
+				{Type: "body_contains", Value: "/promptfoo/favicon"},
 			}},
 		},
 		Severity: "medium",
