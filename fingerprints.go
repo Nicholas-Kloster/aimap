@@ -1285,12 +1285,24 @@ var Fingerprints = []Fingerprint{
 		Severity: "high",
 	},
 	{
-		Name:         "Lunary",
+		Name: "Lunary",
+		// Iter 21: catastrophic over-match against Elasticsearch fixed.
+		// The old `/api/v1/health` + `json_field:status` probe matched any
+		// JSON with a "status" field — including Elasticsearch's
+		// /_cluster/health response (`status: green`). Observed 283 false
+		// positives in the n8n corpus sweep against hosts reverse-proxying
+		// Elasticsearch at /api/v1/health.
+		//
+		// Real Lunary returns the exact body `{"status":"OK"}`. We anchor
+		// to that exact substring AND anti-match the ES shape via
+		// body_not_contains on a unique-to-Elasticsearch field.
 		DefaultPorts: []int{3000, 80, 443},
 		Probes: []Probe{
 			{Path: "/api/v1/health", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
-				{Type: "json_field", Field: "status"},
+				{Type: "body_contains", Value: `"status":"ok"`},
+				{Type: "body_not_contains", Value: "cluster_name"},
+				{Type: "body_not_contains", Value: "active_shards"},
 			}},
 			{Path: "/", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
@@ -1482,13 +1494,11 @@ func matchFingerprints(openPorts []PortResult, timeout time.Duration, verbose bo
 // Used by fingerprint unit tests; in production the matcher fetches a fresh
 // response per probe path.
 //
-// For the special-case probe path "/" or "", the captured BodySnippet and
-// Headers from the original port scan are used directly.
+// The probe's Path is NOT used by this helper — the caller is responsible
+// for providing a PortResult whose BodySnippet/Headers represent what the
+// path would return. This lets tests synthesize any probe shape (root,
+// /api/v1/health, /docs, etc.) without network access.
 func matchProbe(probe Probe, pr PortResult) bool {
-	if probe.Path != "/" && probe.Path != "" {
-		// Non-root probes require a real network fetch; this helper can't.
-		return false
-	}
 	body := []byte(pr.BodySnippet)
 	headers := pr.Headers
 	if headers == nil {
