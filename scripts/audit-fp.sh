@@ -122,10 +122,14 @@ while IFS=$'\t' read -r ip port title; do
   slug=$(echo "${FP_NAME}-${ip}-${port}" | tr ' /' '__')
   REPORT="$OUTDIR/${slug}.json"
   AIMAP_ARGS=(-target "$ip" -ports "$port" -threads 8 -timeout 5s -o "$REPORT")
+  # Scan-all probes ~73 FPs (~150 HTTP requests per port). Use a much
+  # longer subprocess timeout when -scan-all is enabled.
+  PROBE_TIMEOUT=90
   if [[ "$SCAN_ALL" -eq 1 ]]; then
     AIMAP_ARGS+=(-scan-all-fingerprints)
+    PROBE_TIMEOUT=300
   fi
-  if timeout 90 aimap "${AIMAP_ARGS[@]}" >/dev/null 2>&1; then
+  if timeout "$PROBE_TIMEOUT" aimap "${AIMAP_ARGS[@]}" >/dev/null 2>&1; then
     SERVICES=$(jq -r '.services[]?.service // empty' "$REPORT" 2>/dev/null | sort -u | paste -sd ',' -)
     if [[ -n "$SERVICES" ]]; then
       if [[ "$SERVICES" == *"$FP_NAME"* ]]; then

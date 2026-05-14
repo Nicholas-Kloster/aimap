@@ -593,14 +593,21 @@ var Fingerprints = []Fingerprint{
 		Severity: "high",
 	},
 	{
-		Name:         "n8n",
+		Name: "n8n",
+		// Verified live 2026-05-13 against 217.77.5.226:5678 and
+		// 89.207.169.68:10243. Single-word body_contains "n8n" over-matched
+		// any page that mentioned the project; replaced with conjunctive
+		// <title>n8n.io - Workflow Automation</title> + REST_ENDPOINT
+		// JavaScript constant.
 		DefaultPorts: []int{5678, 80, 443},
 		Probes: []Probe{
 			{Path: "/rest/active-workflows", Matches: []MatchCond{
 				{Type: "json_field", Field: "data"},
 			}},
 			{Path: "/", Matches: []MatchCond{
-				{Type: "body_contains", Value: "n8n"},
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "<title>n8n.io"},
+				{Type: "body_contains", Value: "REST_ENDPOINT"},
 			}},
 		},
 		Severity: "critical",
