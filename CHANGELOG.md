@@ -2,6 +2,47 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.0] through [v1.9.2] - 2026-05-14
+
+Agent-platform and browser-automation tier coverage. Fingerprint count:
+74 -> 76. Test count: 47 -> 53.
+
+### AutoGen Studio fingerprint + enumerator (v1.9.0)
+
+New fingerprint for Microsoft's AutoGen Studio agent IDE. Source-verified
+against `microsoft/autogen`: the FastAPI app carries unique messages at
+`/api/version` ("Version retrieved successfully") and `/api/health`
+("Service is healthy"). Dedicated enumerator probes `/api/teams`,
+`/api/settings`, `/api/sessions` with `?user_id=guest@guest.com` — the
+optional AuthMiddleware is off by default, so a 200 with a data array is
+fully unauthenticated. Surfaced 9 confirmed unauth instances in the
+agent-platform-tier survey.
+
+### Flowise honeypot over-match fix (v1.9.1)
+
+The Flowise fingerprint's single-word `body_contains: flowise` matched a
+13-host AWS honeypot fleet serving Flowise SPA bait. Tightened to a
+conjunctive `<title>flowise - build ai agents` match; moved the API probe
+off the deprecated `/api/v1/flows` to `/api/v1/chatflows`.
+
+### Anti-detect CDP server fingerprint + enumerator (v1.9.2)
+
+New fingerprint for the aiohttp-fronted anti-detect Chrome DevTools
+Protocol server, field-discovered in the browser-automation backend
+survey (`159.195.70.69`, `23.19.231.93`). A Python aiohttp server fronts
+CDP on :9222 and exposes a control-plane root —
+`{"status","active","processes":{...,"seed","proxy","timezone","locale"}}`
+— whose per-process anti-fingerprint seeds identify the platform class.
+Both probes require the `Server: aiohttp` header, which keeps the
+fingerprint off (a) the CDP honeypot fleet that fakes `/json/version`
+with a bare-Chrome header, and (b) raw Chrome CDP whose HTTP server is
+Chrome's own. The enumerator deep-reads `/json/version`, `/json`, and the
+control-plane root — read-only, never opening the WebSocket — and reports
+browser-level control, live hijackable sessions, and the managed
+browser-process pool. Live-verified on both real hosts: matched,
+NONE auth, critical risk. ToolVersion bumped 1.8.2 -> 1.9.2 (the
+constant had lagged two releases).
+
 ## [v1.8.1] through [v1.8.8] - 2026-05-13
 
 Bulletproofing arc. Twelve TDD + live-verification iterations against

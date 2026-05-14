@@ -137,6 +137,8 @@ func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool
 			result = enumOpenHands(client, svc)
 		case "AutoGen Studio":
 			result = enumAutoGenStudio(client, svc)
+		case "Anti-detect CDP server":
+			result = enumAntiDetectCDP(client, svc)
 		case "Mem0":
 			result = enumMem0(client, svc)
 		case "Coolify":
@@ -2859,6 +2861,109 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ── Anti-detect CDP server ──────────────────────────────────────────
+
+// enumAntiDetectCDP deep-reads an aiohttp-fronted anti-detect Chrome
+// DevTools Protocol server. CDP has no authentication concept, so any
+// reachable instance is unauthenticated by definition. The enumerator
+// reads only the discovery endpoints — /json/version, /json, and the
+// aiohttp control-plane root. It never opens the WebSocket; the mere
+// presence of a webSocketDebuggerUrl is the proof of control.
+func enumAntiDetectCDP(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "none" // CDP is auth-never; reachable == unauthenticated
+
+	// /json/version — browser build + the browser-level ws control URL.
+	if st, _, body, err := httpGET(c, b+"/json/version"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.Version = jStr(m, "Browser")
+			if ws := jStr(m, "webSocketDebuggerUrl"); ws != "" {
+				r.RawData["browser_ws"] = ws
+				r.Findings = append(r.Findings, Finding{
+					Category: "access",
+					Title:    "Browser-level CDP WebSocket exposed without authentication",
+					Detail: "The browser-level webSocketDebuggerUrl is reachable. " +
+						"Speaking CDP over it gives full remote control of the browser: " +
+						"Network.getAllCookies (incl. HttpOnly session tokens), " +
+						"Runtime.evaluate (arbitrary JS in any origin), Page.navigate, " +
+						"and Target.createTarget. Equivalent to a remote-desktop session " +
+						"into a browser that is already logged into things.",
+					Severity: "critical",
+				})
+			}
+		}
+	}
+
+	// /json — open targets (tabs/workers), each with its own ws URL. A
+	// live page target means a live, hijackable session.
+	if st, _, body, err := httpGET(c, b+"/json"); err == nil && st == 200 {
+		if arr, err := parseJSONArray(body); err == nil {
+			pages := 0
+			var urls []string
+			for _, t := range arr {
+				tm, ok := t.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if jStr(tm, "type") == "page" {
+					pages++
+					if u := jStr(tm, "url"); u != "" {
+						urls = append(urls, u)
+					}
+				}
+			}
+			r.RawData["open_targets"] = len(arr)
+			r.RawData["open_pages"] = pages
+			if len(urls) > 0 {
+				r.RawData["page_urls"] = urls
+				r.Details = append(r.Details, fmt.Sprintf("%d open page target(s)", pages))
+				r.Findings = append(r.Findings, Finding{
+					Category: "data",
+					Title:    "Live browser session(s) reachable via CDP",
+					Detail: "Open page targets are listed with controllable WebSocket URLs. " +
+						"If any session is authenticated, Network.getCookies yields its " +
+						"session token — account takeover with no password and no MFA prompt.",
+					Severity: "critical",
+				})
+			}
+		}
+	}
+
+	// / — the aiohttp anti-detect control plane. Exposes the managed
+	// browser-process pool: pid, internal port, anti-fingerprint seed,
+	// and any pinned proxy / timezone / locale.
+	if st, _, body, err := httpGET(c, b+"/"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			if procs := jMap(m, "processes"); procs != nil {
+				r.RawData["managed_processes"] = len(procs)
+				r.Details = append(r.Details, fmt.Sprintf("%d managed browser process(es)", len(procs)))
+				for _, pv := range procs {
+					pm, ok := pv.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					if proxy := jStr(pm, "proxy"); proxy != "" {
+						r.RawData["upstream_proxy"] = proxy
+					}
+				}
+				r.Findings = append(r.Findings, Finding{
+					Category: "config",
+					Title:    "Anti-detect browser-farm control plane exposed",
+					Detail: "The aiohttp control-plane root lists the managed browser-process " +
+						"pool with per-process anti-fingerprint seeds and any pinned upstream " +
+						"proxy/timezone/locale. Discloses the scraping operation's structure " +
+						"and lets an attacker drive the farm.",
+					Severity: "high",
+				})
+			}
+		}
+	}
+
+	r.RiskLevel = computeRisk(r)
+	return r
 }
 
 func computeRisk(r EnumResult) string {

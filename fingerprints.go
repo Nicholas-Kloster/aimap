@@ -662,6 +662,45 @@ var Fingerprints = []Fingerprint{
 		Severity: "critical",
 	},
 	{
+		// Anti-detect CDP browser-automation server. Field-discovered
+		// 2026-05-14 in the browser-automation backend survey
+		// (159.195.70.69, 23.19.231.93). A Python aiohttp server fronts
+		// Chrome's DevTools Protocol on :9222. Two discriminators, either
+		// of which confirms it on its own:
+		//
+		//   GET /              → an aiohttp control-plane JSON shape
+		//                        {"status","active","processes":{...,
+		//                        "seed","proxy","timezone","locale"}}.
+		//                        The per-process seed/proxy fields are
+		//                        anti-fingerprint controls — unique to
+		//                        this class of automation tooling.
+		//   GET /json/version  → a valid CDP version doc, but served by
+		//                        aiohttp (Server header), not Chrome.
+		//
+		// Both probes REQUIRE the aiohttp Server header. That is what
+		// keeps this fingerprint off (a) the CDP honeypot fleet, which
+		// fakes /json/version with a bare-Chrome header and never serves
+		// the control-plane root, and (b) raw Chrome CDP, whose HTTP
+		// server is Chrome's own, not aiohttp.
+		Name:         "Anti-detect CDP server",
+		DefaultPorts: []int{9222, 9223, 3000, 5100},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "header_contains", Field: "Server", Value: "aiohttp"},
+				{Type: "json_field", Field: "active"},
+				{Type: "body_contains", Value: "processes"},
+				{Type: "body_contains", Value: "seed"},
+			}},
+			{Path: "/json/version", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "header_contains", Field: "Server", Value: "aiohttp"},
+				{Type: "body_contains", Value: "websocketdebuggerurl"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
 		Name: "Mem0",
 		// Default is 8888 in upstream docs, but field-validated 2026-05-13
 		// against 45.77.183.19:8000 and other Shodan hits that run Mem0

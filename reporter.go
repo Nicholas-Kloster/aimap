@@ -273,7 +273,7 @@ func buildReport(hosts []string, portsPerHost int, openPorts []PortResult,
 
 	rpt := ScanReport{
 		Tool:         "aimap",
-		ToolVersion:  "1.8.2",
+		ToolVersion:  "1.9.2",
 		Target:       strings.Join(hosts, ", "),
 		Timestamp:    time.Now().UTC().Format(time.RFC3339),
 		PortsScanned: len(hosts) * portsPerHost,
