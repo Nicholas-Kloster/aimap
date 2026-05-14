@@ -2,6 +2,121 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.8.1] through [v1.8.8] - 2026-05-13
+
+Bulletproofing arc. Twelve TDD + live-verification iterations against
+Shodan-sourced candidates surfaced systemic gaps the catalog had carried
+unnoticed. Fingerprint count: 74 -> 74 (no new platforms; existing FPs
+hardened and modernized). Test count: **0 -> 47**. MLflow corpus
+coverage on the Phase 5 120-host inventory: **0% -> 91%**.
+
+### MLflow tracker invisibility (v1.8.1)
+
+The MLflow fingerprint probed `/api/2.0/mlflow/experiments/list`, an
+endpoint upstream removed years ago. **Every modern MLflow tracker on
+the public Internet was silently invisible to aimap** for an unknown
+duration. Field-validated against `78.135.66.61:5000` and 109 hosts
+from the Phase 5 corpus. Replaced with a conjunctive GET / probe
+(`<title>mlflow</title>` + `static-files/manifest.json` reference).
+
+### Live-verified fingerprint refits (v1.8.1 through v1.8.8)
+
+Each FP retested against at least one Shodan-sourced live candidate:
+
+- **MLflow** - modern GET / probe (was deprecated endpoint)
+- **Helicone Self-Hosted** - added `body_not_contains` guard against
+  marketing-site reflections that served helicone.ai content on port
+  3000 of unrelated hosts. Eliminated 4 known false-positive shapes.
+- **Open WebUI** - tightened from single brand-word match to
+  conjunctive `<title>Open WebUI</title>` + `/static/loader.js`
+- **SillyTavern** - replaced the stale `WWW-Authenticate: SillyTavern`
+  header probe (1.12+ doesn't ship that header) with the modern
+  HTML login page shape.
+- **Coqui XTTS** - added a third probe for the custom HTML UI fork
+  with title pattern + tts-form class anchors.
+- **Whisper ASR** - `/docs` probe relaxed (the `/asr` substring only
+  appears in `/openapi.json`, not the Swagger HTML).
+- **RVC WebUI** - added a probe for modern Gradio builds shipping
+  `og:title="RVC WebUI"` instead of the upstream
+  `Retrieval-based-Voice-Conversion` string.
+- **Pipecat** - tightened from single brand-word match to title +
+  `assets/index-` Vite-bundle path. Added direct `/client/` probe.
+- **LiveKit Agents** - added a third probe for LiveKit Meet (the
+  dominant deployment, ~1000 Shodan hits, previously invisible).
+- **Promptfoo** - added GET / probe for SPA-only deployments where
+  `/api/health` isn't mounted.
+- **Ray Serve** - added probe for the custom REST root-JSON shape
+  used in production Ray Serve deployments.
+
+### Catalog-wide DefaultPorts widening (v1.8.4 / iter 8d)
+
+Empirical Shodan counts of off-canonical-port deployments revealed
+~150k host-port combinations the catalog couldn't reach:
+
+```
+n8n        89,770 off-port hits
+Airflow    43,429
+Superset    9,945
+LiteLLM     4,617
+Langfuse    2,231
+Flowise     2,147
+vLLM          195
+BentoML        46
+```
+
+Added `{80, 443}` (and where relevant `8080`) to the DefaultPorts of
+all 8 user-facing FPs. Also widened Grafana, Mem0, LangServe under
+iter 8a / 8c.
+
+### New aimap features
+
+| Feature | Use |
+|---|---|
+| `parseTargetsVerbose()` | Tolerates and warns on common typos (`host:port` from another tool's output, comma-joined target lists, bracketed IPv6). Wired into `-target` and `-list` ingress in `main.go`. |
+| `startWatchdog()` | Polls scan progress; emits a stderr warning if the counter doesn't advance for 12x the connection timeout. Surfaces silent-hang pathologies in 30s-60s instead of hours. |
+| `MatchCond.Type = "body_not_contains"` | Anti-match condition. Lets fingerprints reject specific marketing-reflection or brand-mention shapes that contain the right strings but in the wrong context. |
+| `AdjacencyMatch` type + `buildAdjacencies()` | Implements **Methodology Insight #20**. When a host has a confirmed AI/ML service (Phase 2 fingerprint match), data-tier ports on the SAME host (Postgres 5432, Redis 6379, MinIO 9000/9001, Kafka 9092, RabbitMQ 5672/15672, MailHog 1025/8025) are emitted as ML-adjacent findings with elevated severity. Reporter renders a new "ML-ADJACENT INFRASTRUCTURE" section; JSON report carries an `adjacencies` key. Severity counts include adjacency findings. |
+| `-scan-all-fingerprints` flag | Bypasses the DefaultPorts filter; every FP probes every open port. Use when services live on operator-chosen non-canonical ports. Trades ~30x more HTTP requests for coverage. Also adds a stderr warning when an open port has zero FP candidates under the default filter. |
+| Intra-port FP concurrency (v1.8.7 / iter 11) | DefaultPorts widening pushed port 80 from ~5 candidate FPs to 21. The serial inner loop made per-host wall time grow from ~10s to ~80s. Moved the semaphore from the outer port-goroutine to the inner FP-goroutine. **~6x speedup**: 80s -> 13s with `-threads 16`. |
+| `matchProbe()` helper | Test-friendly offline matcher evaluation against a captured `PortResult`. Enables TDD-driven fingerprint development without a network round-trip. |
+| `scripts/audit-fp.sh` | Codifies the audit pattern: given a FP name, pulls Shodan candidates, runs aimap against each, reports OK / MISS / TIMEOUT. Supports `--dork` override, `--limit N`, and `--scan-all` for non-canonical-port platforms. |
+
+### Headline numbers
+
+- **MLflow population coverage** (Phase 5 corpus, 120 hosts):
+  - Before v1.8.1: 0% (deprecated endpoint, FP never matched)
+  - After v1.8.8: ~91% (80 from canonical ports + 29 from miss-recovery pass with `-scan-all-fingerprints`)
+- **Wall-time on dense port** (port 80, 21 candidate FPs after widening):
+  - Before v1.8.7: ~80s/host (serial)
+  - After v1.8.7: ~13s/host (`-threads 16`, intra-port parallelism)
+- **False positives eliminated**: 4 Helicone marketing reflections + over-match guards added for Open WebUI / Coqui XTTS / Pipecat / LiveKit / Ray Serve / Promptfoo.
+
+### Reusable methodology
+
+The arc surfaced and codified five reusable lessons:
+
+1. **Catalog audit means live verification.** Unit tests pass for FPs that probe dead endpoints; the bug surfaces only on a real host.
+2. **DefaultPorts narrowness is the second-most-common cause of FP false-negatives** after deprecated endpoints.
+3. **Single-word `body_contains` brand matches are the load-bearing pathology** - always anchor brand mentions to project-specific asset paths.
+4. **`body_not_contains` is a class of FP fix**, not a one-off - marketing reflections share a hardcoded `canonical href` pattern.
+5. **Per-port parallelism without intra-port parallelism is a partial optimization** - once a port claims many FPs, the inner loop becomes the bottleneck.
+
+### Pending tail (no live-verification possible)
+
+| FP | Why |
+|---|---|
+| TensorFlow Serving | 0 Shodan hits, no findable deployment |
+| Triton Inference Server | 117 Shodan hits but all unreachable from scanning location |
+| Inspect AI | 5 hits, all 000 |
+| NeMo Guardrails | 0 hits |
+| DeepEval Server | 0 hits |
+| Lakera Guard Self-Hosted | 0 hits beyond brand-mention reflections |
+
+These FPs may be correct but cannot be verified without a synthetic
+deployment or upstream-project Docker spin-up. Tracked as future work.
+
+---
+
 ## [v1.8.0] - 2026-05-12
 
 AI observability tier completion. Backward-compatible. Fingerprint count: 69 -> 74. Enumerator count: 36 -> 41.
