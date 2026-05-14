@@ -243,15 +243,23 @@ var Fingerprints = []Fingerprint{
 		Severity: "medium",
 	},
 	{
+		// Iter 22: tightened after the 1,203-host MLflow delta sweep
+		// classified 13 honeypot sensors as Flowise. The single-word
+		// body_contains "flowise" on / matched honeypot bait pages, and
+		// the API probe hit /api/v1/flows — the DEPRECATED endpoint.
+		// Modern Flowise uses /api/v1/chatflows; the real SPA ships
+		// <title>Flowise - Build AI Agents, Visually</title>.
 		Name:         "Flowise",
 		DefaultPorts: []int{3000, 80, 443},
 		Probes: []Probe{
-			{Path: "/api/v1/flows", Matches: []MatchCond{
+			{Path: "/api/v1/chatflows", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
 				{Type: "json_array"},
 				{Type: "body_contains", Value: "flowData"},
 			}},
 			{Path: "/", Matches: []MatchCond{
-				{Type: "body_contains", Value: "flowise"},
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "<title>flowise - build ai agents"},
 			}},
 		},
 		Severity: "high",
