@@ -628,6 +628,32 @@ var Fingerprints = []Fingerprint{
 		Severity: "critical",
 	},
 	{
+		// AutoGen Studio (Microsoft AutoGen agent IDE). Source-verified
+		// against microsoft/autogen @ python/packages/autogen-studio: the
+		// FastAPI app mounts its API under /api/ and serves the React SPA
+		// at /. Two API endpoints carry unique-to-AutoGen-Studio messages:
+		//   /api/version → message "Version retrieved successfully" + data.version
+		//   /api/health  → message "Service is healthy"
+		// Exposed AutoGen Studio is critical: an attacker inherits the
+		// agent definitions, the tool configs (which frequently embed API
+		// keys / credentials), and the agent's autonomy.
+		Name:         "AutoGen Studio",
+		DefaultPorts: []int{8081, 8001, 8000, 80, 443},
+		Probes: []Probe{
+			{Path: "/api/version", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "version retrieved successfully"},
+				{Type: "json_field", Field: "data"},
+			}},
+			{Path: "/api/health", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "service is healthy"},
+				{Type: "json_field", Field: "status"},
+			}},
+		},
+		Severity: "critical",
+	},
+	{
 		Name: "Mem0",
 		// Default is 8888 in upstream docs, but field-validated 2026-05-13
 		// against 45.77.183.19:8000 and other Shodan hits that run Mem0

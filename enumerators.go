@@ -135,6 +135,8 @@ func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool
 			result = enumOpenWebUI(client, svc)
 		case "OpenHands":
 			result = enumOpenHands(client, svc)
+		case "AutoGen Studio":
+			result = enumAutoGenStudio(client, svc)
 		case "Mem0":
 			result = enumMem0(client, svc)
 		case "Coolify":
@@ -1775,6 +1777,106 @@ func enumOpenHands(c *http.Client, svc ServiceMatch) EnumResult {
 				r.Details = append(r.Details, fmt.Sprintf("Agents available: %d", len(agents)))
 			}
 		}
+	}
+
+	return r
+}
+
+// ── AutoGen Studio ──────────────────────────────────────────────────
+
+func enumAutoGenStudio(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+
+	// Version from /api/version
+	if st, _, body, err := httpGET(c, b+"/api/version"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			if data := jMap(m, "data"); data != nil {
+				r.Version = jStr(data, "version")
+			}
+		}
+	}
+
+	// AutoGen Studio's data routes require a user_id query param. With the
+	// optional AuthMiddleware disabled (the default), user_id is just an
+	// arbitrary string anyone can supply — there is no per-user secret.
+	// A 200 with a data array == fully unauthenticated.
+	probeUID := "?user_id=guest@guest.com"
+
+	// /api/teams — agent team definitions. This is the crown-jewel route:
+	// team configs embed the tool definitions, and AutoGen tool configs
+	// frequently carry API keys / credentials inline.
+	if st, _, body, err := httpGET(c, b+"/api/teams/"+probeUID); err == nil {
+		switch st {
+		case 200:
+			r.AuthStatus = "none"
+			if m, err := parseJSON(body); err == nil {
+				if teams := jArray(m, "data"); teams != nil {
+					r.Details = append(r.Details, fmt.Sprintf("Agent teams readable: %d", len(teams)))
+					r.RawData["teams_count"] = len(teams)
+				}
+			}
+			r.Findings = append(r.Findings, Finding{
+				Category: "access",
+				Title:    "AutoGen Studio /api/teams readable without authentication",
+				Detail:   "Agent team definitions are world-readable. AutoGen team configs embed tool definitions that frequently carry inline API keys and credentials.",
+				Severity: "critical",
+			})
+		case 401, 403:
+			r.AuthStatus = "auth required"
+		}
+	}
+
+	// /api/settings — per-user settings blob, can include model client
+	// configuration (which carries provider API keys on some setups).
+	if st, _, body, err := httpGET(c, b+"/api/settings/"+probeUID); err == nil && st == 200 {
+		r.AuthStatus = "none"
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["settings"] = m
+		}
+		r.Findings = append(r.Findings, Finding{
+			Category: "data",
+			Title:    "AutoGen Studio /api/settings readable without authentication",
+			Detail:   "Model-client configuration is world-readable; may expose provider API keys depending on operator setup.",
+			Severity: "high",
+		})
+	}
+
+	// /api/sessions — conversation/run history. Leaks prompts + outputs.
+	if st, _, body, err := httpGET(c, b+"/api/sessions/"+probeUID); err == nil && st == 200 {
+		r.AuthStatus = "none"
+		if m, err := parseJSON(body); err == nil {
+			if sessions := jArray(m, "data"); sessions != nil {
+				r.Details = append(r.Details, fmt.Sprintf("Sessions readable: %d", len(sessions)))
+			}
+		}
+		r.Findings = append(r.Findings, Finding{
+			Category: "data",
+			Title:    "AutoGen Studio /api/sessions readable without authentication",
+			Detail:   "Agent conversation history is world-readable — prompts, intermediate reasoning, and outputs.",
+			Severity: "high",
+		})
+	}
+
+	// /api/gallery — component gallery (custom tools/agents shared on the
+	// instance). Lower severity but confirms the data tier is open.
+	if st, _, _, err := httpGET(c, b+"/api/gallery/"+probeUID); err == nil && st == 200 {
+		r.Details = append(r.Details, "Gallery endpoint readable")
+	}
+
+	if r.AuthStatus == "unknown" {
+		// /api/version returned 200 (FP matched) but no data route was
+		// readable — likely AuthMiddleware is enabled.
+		r.AuthStatus = "auth required"
+	}
+
+	if r.AuthStatus == "none" {
+		r.Findings = append(r.Findings, Finding{
+			Category: "context",
+			Title:    "AutoGen Studio stores agent definitions, tool configs, and run history",
+			Detail:   "An exposed AutoGen Studio gives an attacker the agent definitions, the tool configs (which may embed credentials), and the conversation history. If the instance can execute agents, the attacker also inherits the agent's autonomy.",
+			Severity: "info",
+		})
 	}
 
 	return r
