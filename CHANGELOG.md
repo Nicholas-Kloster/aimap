@@ -2,6 +2,33 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.3] - 2026-05-14
+
+### Code-assistant fingerprints (category 09)
+
+Eight new fingerprints for self-hosted code assistants, all source-verified
+against live confirmed hosts during the 2026-05-14 code-assistant survey
+(see `AI-LLM-Infrastructure-OSINT/shodan/queries/09-code-assistants.md`):
+
+- **OpenHands** — `/api/options/config` (`APP_MODE` + `POSTHOG_CLIENT_KEY`)
+  and `/api/options/models` (JSON array). Activates the pre-existing
+  `enumOpenHands` enumerator, which was previously dead code (registered in
+  the switch but unreachable with no OpenHands fingerprint to match first).
+- **Sourcegraph** — `/.api/graphql` ("Private mode requires authentication")
+  + `/sign-in` title.
+- **Sourcebot** — `/api/repos` auth envelope (`errorCode` + `NOT_AUTHENTICATED`).
+- **Sweep AI** — `/health` (Sweep-specific `autocomplete` field).
+- **Tabnine Context Engine** — `/api/version` (Tabnine-specific `X-API-Key
+  header` auth message).
+- **Dyad** — `dyad-generated-app` title string.
+- **bolt.diy** — `bolt.diy` body string, 200-anchored.
+- **Refact** — `Refact Server Login` full title string (the bare token
+  "Refact" is a false-positive trap — matches "refactor" in JS bundles).
+
+Test count: 53 -> 65. Includes a false-positive guard test covering the
+known FP traps from the survey (Tabby Terminal, "refactor" substring,
+generic 401/health bodies).
+
 ## [v1.9.0] through [v1.9.2] - 2026-05-14
 
 Agent-platform and browser-automation tier coverage. Fingerprint count:

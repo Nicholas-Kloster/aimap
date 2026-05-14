@@ -700,6 +700,152 @@ var Fingerprints = []Fingerprint{
 		},
 		Severity: "high",
 	},
+
+	// ── Code assistants (category 09) ───────────────────────────
+	// All fingerprints below were source-verified against live
+	// confirmed hosts during the 2026-05-14 code-assistant survey
+	// (see AI-LLM-Infrastructure-OSINT/shodan/queries/09-code-assistants.md).
+	{
+		// OpenHands (All Hands AI) — autonomous coding-agent backend,
+		// ex-OpenDevin. FastAPI under /api/, React SPA at /. Two
+		// unauthenticated option endpoints confirmed on live hosts:
+		//   GET /api/options/config → {"APP_MODE":"oss","GITHUB_CLIENT_ID":
+		//                              "","POSTHOG_CLIENT_KEY":"phc_..."}
+		//                              APP_MODE is OpenHands-specific.
+		//   GET /api/options/models → a JSON array of model id strings.
+		// The autonomous agent + Docker workspace puts an exposed
+		// instance in the sandbox-escape / agent-hijack tier.
+		Name:         "OpenHands",
+		DefaultPorts: []int{3000, 3001, 80, 443},
+		Probes: []Probe{
+			{Path: "/api/options/config", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "APP_MODE"},
+				{Type: "body_contains", Value: "POSTHOG_CLIENT_KEY"},
+			}},
+			{Path: "/api/options/models", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_array"},
+			}},
+		},
+		Severity: "critical",
+	},
+	{
+		// Sourcegraph self-hosted — code-search + Cody backend.
+		// /.api/graphql returns the unique string "Private mode
+		// requires authentication." even when locked down; the
+		// sign-in page title is also Sourcegraph-specific. Indexed
+		// private repos are the exposure when auth is off.
+		Name:         "Sourcegraph",
+		DefaultPorts: []int{80, 81, 443, 7080, 3080},
+		Probes: []Probe{
+			{Path: "/.api/graphql", Matches: []MatchCond{
+				{Type: "body_contains", Value: "Private mode requires authentication"},
+			}},
+			{Path: "/sign-in", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "Sign in - Sourcegraph"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		// Sourcebot self-hosted code-search. /api/version returns a
+		// bare {"version":"v4.x.x"} (too generic alone), but /api/repos
+		// returns the distinctive auth-error envelope
+		// {"statusCode":401,"errorCode":"NOT_AUTHENTICATED",...} —
+		// errorCode + the NOT_AUTHENTICATED token together are the
+		// anchored signal.
+		Name:         "Sourcebot",
+		DefaultPorts: []int{8080, 3000, 80, 443},
+		Probes: []Probe{
+			{Path: "/api/repos", Matches: []MatchCond{
+				{Type: "json_field", Field: "errorCode"},
+				{Type: "body_contains", Value: "NOT_AUTHENTICATED"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		// Sweep AI — autonomous PR/issue-fixing agent. uvicorn.
+		// GET /health → {"status":"UP","autocomplete":"N/A"}. The
+		// autocomplete field is Sweep-specific (a generic health
+		// endpoint does not carry it).
+		Name:         "Sweep AI",
+		DefaultPorts: []int{80, 443, 8080},
+		Probes: []Probe{
+			{Path: "/health", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "autocomplete"},
+				{Type: "body_contains", Value: "status"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		// Tabnine self-hosted ("Tabnine Context Engine"). Indexes
+		// private repos for completion. /api/version on a locked host
+		// returns the Tabnine-specific auth-required message
+		// {"error":"Unauthorized","message":"API key required. Use
+		// Authorization: Bearer <key> or X-API-Key header."}.
+		Name:         "Tabnine Context Engine",
+		DefaultPorts: []int{443, 80, 8080},
+		Probes: []Probe{
+			{Path: "/api/version", Matches: []MatchCond{
+				{Type: "json_field", Field: "error"},
+				{Type: "body_contains", Value: "X-API-Key header"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		// Dyad self-hosted app-builder agent. Static-exported app;
+		// the generated app stamps <title>dyad-generated-app</title>
+		// — a Dyad-specific title string not seen on other stacks.
+		Name:         "Dyad",
+		DefaultPorts: []int{80, 443, 3000},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "dyad-generated-app"},
+			}},
+		},
+		Severity: "medium",
+	},
+	{
+		// bolt.diy self-hosted app-builder agent (OSS fork of
+		// bolt.new). Remix app; the default HTML title is generic
+		// ("Create Next App" on some builds) but the body carries
+		// the "bolt.diy" string. Anchored to a 200 to avoid matching
+		// error pages that reflect the term.
+		Name:         "bolt.diy",
+		DefaultPorts: []int{3000, 3001, 5173, 8081, 80, 443},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "bolt.diy"},
+			}},
+		},
+		Severity: "medium",
+	},
+	{
+		// Refact.ai self-hosted. The verified live population is small
+		// and instances are typically auth-gated (the API returns
+		// FastAPI 404s on unauthenticated paths), so the signature is
+		// the login-page title string "Refact Server Login" — unique
+		// to Refact's self-hosted server. NOTE: "Refact" alone is a
+		// false-positive trap (matches "refactor" in JS bundles); the
+		// full login-page string is required.
+		Name:         "Refact",
+		DefaultPorts: []int{80, 443, 8008, 8081},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "Refact Server Login"},
+			}},
+		},
+		Severity: "medium",
+	},
 	{
 		Name: "Mem0",
 		// Default is 8888 in upstream docs, but field-validated 2026-05-13
