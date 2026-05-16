@@ -219,6 +219,12 @@ func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool
 			result = enumInfinity(client, svc)
 		case "Embedding API":
 			result = enumEmbeddingAPI(client, svc)
+		case "ComfyUI":
+			result = enumComfyUI(client, svc)
+		case "AUTOMATIC1111 / SD WebUI":
+			result = enumA1111(client, svc)
+		case "InvokeAI":
+			result = enumInvokeAI(client, svc)
 		default:
 			result = mkResult(svc)
 		}
@@ -3085,4 +3091,170 @@ func computeRisk(r EnumResult) string {
 		return "critical"
 	}
 	return best
+}
+
+// enumComfyUI — read-only ComfyUI API enumeration.
+// Reads /system_stats (version + GPU + operator argv), /object_info (node
+// catalog size), /queue (running/pending workflows), /history (recent runs).
+// Probes /customnode/getlist as a tell for ComfyUI-Manager — its presence
+// means the operator can RCE themselves by design (custom-node install is
+// arbitrary Python). Restraint: never POST /prompt, never trigger /interrupt,
+// never call /upload/image, never install custom nodes.
+// Field-validated 2026-05-16 on 103.192.253.238:8575 (NVIDIA L40S, 1TB RAM).
+func enumComfyUI(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "none"
+
+	// /system_stats — version, GPU, operator argv
+	if st, _, body, err := httpGET(c, b+"/system_stats"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["system_stats"] = m
+			if sys, ok := m["system"].(map[string]interface{}); ok {
+				if v := jStr(sys, "comfyui_version"); v != "" {
+					r.Version = v
+					r.Details = append(r.Details, "ComfyUI "+v)
+				}
+				if py := jStr(sys, "python_version"); py != "" {
+					if i := strings.Index(py, "|"); i > 0 {
+						py = strings.TrimSpace(py[:i])
+					}
+					r.Details = append(r.Details, "Python "+py)
+				}
+				if pt := jStr(sys, "pytorch_version"); pt != "" {
+					r.Details = append(r.Details, "PyTorch "+pt)
+				}
+				// Operator argv — frequently exposes config secrets, custom flags
+				if argv, ok := sys["argv"].([]interface{}); ok && len(argv) > 0 {
+					var parts []string
+					for _, a := range argv {
+						parts = append(parts, fmt.Sprintf("%v", a))
+					}
+					argvStr := strings.Join(parts, " ")
+					r.RawData["argv"] = argvStr
+					if len(argvStr) < 300 {
+						r.Details = append(r.Details, "argv: "+argvStr)
+					}
+				}
+			}
+			// devices — GPU info
+			if devs, ok := m["devices"].([]interface{}); ok && len(devs) > 0 {
+				if d0, ok := devs[0].(map[string]interface{}); ok {
+					if name := jStr(d0, "name"); name != "" {
+						r.Details = append(r.Details, "GPU: "+name)
+					}
+					if vram := jFloat(d0, "vram_total"); vram > 0 {
+						r.Details = append(r.Details, fmt.Sprintf("VRAM: %.1f GB", vram/1024/1024/1024))
+					}
+				}
+			}
+			r.Findings = append(r.Findings, Finding{
+				Category: "unauth_api", Title: "ComfyUI API unauthenticated",
+				Severity: "critical",
+				Detail:   "GET /system_stats returns operator config + GPU info. Anyone can POST /prompt to run workflows on the operator's GPU. Compute-theft + (with ComfyUI-Manager) unauth RCE by design.",
+			})
+		}
+	}
+
+	// /queue — running + pending workflows (size only, no payload read)
+	if st, _, body, err := httpGET(c, b+"/queue"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			running := 0
+			pending := 0
+			if rArr, ok := m["queue_running"].([]interface{}); ok {
+				running = len(rArr)
+			}
+			if pArr, ok := m["queue_pending"].([]interface{}); ok {
+				pending = len(pArr)
+			}
+			r.RawData["queue"] = map[string]int{"running": running, "pending": pending}
+			if running+pending > 0 {
+				r.Details = append(r.Details, fmt.Sprintf("queue: %d running, %d pending", running, pending))
+			}
+		}
+	}
+
+	// /history — recent workflow runs (count only)
+	if st, _, body, err := httpGET(c, b+"/history"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["history_count"] = len(m)
+			if len(m) > 0 {
+				r.Details = append(r.Details, fmt.Sprintf("history: %d completed runs", len(m)))
+			}
+		}
+	}
+
+	// /customnode/getlist — ComfyUI-Manager presence (RCE-by-design surface)
+	if st, _, body, err := httpGET(c, b+"/customnode/getlist"); err == nil && st == 200 {
+		if strings.Contains(string(body), "ComfyUI-Manager") || strings.Contains(string(body), "custom_nodes") {
+			r.RawData["has_manager"] = true
+			r.Findings = append(r.Findings, Finding{
+				Category: "rce_by_design", Title: "ComfyUI-Manager present — unauth custom-node install = RCE",
+				Severity: "critical",
+				Detail:   "POST /customnode/install on an unauth ComfyUI installs arbitrary Python custom nodes. ComfyUI-Manager's design is that this is intended; auth is meant to gate it. No auth = anyone gets shell.",
+			})
+		}
+	}
+
+	return r
+}
+
+// enumA1111 — read-only AUTOMATIC1111 / Forge / SD.Next API enumeration.
+// Reads /sdapi/v1/options (operator config + model paths), /sdapi/v1/samplers,
+// /sdapi/v1/sd-models (model count only). Restraint: never POST /sdapi/v1/txt2img
+// or /sdapi/v1/img2img — those trigger generation.
+func enumA1111(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "none"
+
+	if st, _, body, err := httpGET(c, b+"/sdapi/v1/options"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["options_keys"] = len(m)
+			if ckpt := jStr(m, "sd_model_checkpoint"); ckpt != "" {
+				r.Details = append(r.Details, "loaded checkpoint: "+ckpt)
+			}
+			if loraDir := jStr(m, "lora_dir"); loraDir != "" {
+				r.Details = append(r.Details, "lora_dir: "+loraDir)
+			}
+			r.Findings = append(r.Findings, Finding{
+				Category: "unauth_api", Title: "A1111 API unauthenticated",
+				Severity: "high",
+				Detail:   "GET /sdapi/v1/options exposes operator config including loaded checkpoint and model paths. POST /sdapi/v1/txt2img triggers generation on operator's GPU.",
+			})
+		}
+	}
+	if st, _, body, err := httpGET(c, b+"/sdapi/v1/sd-models"); err == nil && st == 200 {
+		if arr, err := parseJSONArray(body); err == nil {
+			r.RawData["model_count"] = len(arr)
+			if len(arr) > 0 {
+				r.Details = append(r.Details, fmt.Sprintf("%d SD models available", len(arr)))
+			}
+		}
+	}
+	return r
+}
+
+// enumInvokeAI — read-only InvokeAI API enumeration.
+// Reads /api/v1/app/version, /api/v1/models/get (size only — full enumeration
+// would scrape model paths which is operator-attribution-rich but high-touch).
+func enumInvokeAI(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "none"
+
+	if st, _, body, err := httpGET(c, b+"/api/v1/app/version"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			if v := jStr(m, "version"); v != "" {
+				r.Version = v
+				r.Details = append(r.Details, "InvokeAI "+v)
+			}
+			r.Findings = append(r.Findings, Finding{
+				Category: "unauth_api", Title: "InvokeAI API unauthenticated",
+				Severity: "high",
+				Detail:   "GET /api/v1/app/version exposes version. POST /api/v1/queue/default/enqueue_batch triggers generation on operator's GPU.",
+			})
+		}
+	}
+	return r
 }

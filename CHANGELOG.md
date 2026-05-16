@@ -2,6 +2,53 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.6] - 2026-05-16
+
+### Added: image-generation fingerprint pack (5 platforms)
+
+Closes the image-generation gap (category 08) — previously no aimap coverage.
+Field-validated 2026-05-16 across a 50,058-host ComfyUI corpus
+(`product:"ComfyUI"` Shodan harvest). All five platforms ship with the
+"no auth concept in framework default" posture — Tier-A in the auth-on-default
+thesis.
+
+**Fingerprints** (`fingerprints.go`):
+
+- **ComfyUI** (`Severity: critical`) — `/system_stats` returns JSON with
+  `system.comfyui_version` + `system.python_version` markers. Strict JSON-shape
+  verification distinguishes real ComfyUI from the dominant FP class: SPA
+  shells / reverse-proxy frontends that serve identical HTML for any path,
+  unrelated services with `<title>ComfyUI</title>` (Synology ISX1104, Fireware
+  XTM, Qlik Sense, PRTG, NVR301 all observed in the FP set). ~50% Shodan-tagged
+  hosts are FPs — sharpens [[insight-15-dork-hits-vs-platform-instances]].
+- **AUTOMATIC1111 / SD WebUI** (`Severity: high`) — `/sdapi/v1/options` with
+  `sd_model_checkpoint` marker. Gradio-on-7860, brand string lives in JS bundle
+  (Shodan-dark per [[insight-21-port-first-discovery-for-low-footprint-platforms]]).
+- **InvokeAI** (`Severity: high`) — `/api/v1/app/version` JSON.
+- **Fooocus** (`Severity: high`) — `/config` Gradio endpoint with `Fooocus` marker.
+- **SwarmUI** (`Severity: high`) — root HTML with `SwarmUI` marker.
+
+**Deep enumerators** (`enumerators.go`):
+
+- `enumComfyUI` — reads `/system_stats` (version + GPU + operator argv),
+  `/queue` (running + pending count), `/history` (run count), `/customnode/getlist`
+  (ComfyUI-Manager presence — **unauth custom-node install = RCE by design**,
+  the design intent is that auth gates this).
+- `enumA1111` — reads `/sdapi/v1/options` (loaded checkpoint + lora_dir paths),
+  `/sdapi/v1/sd-models` (model count). Operator-attribution-rich (model paths
+  leak operator filesystem layout).
+- `enumInvokeAI` — reads `/api/v1/app/version` (version disclosure).
+
+**Restraint coded in:** no POST to `/prompt`, `/sdapi/v1/txt2img`,
+`/sdapi/v1/img2img`, `/api/v1/queue/default/enqueue_batch`, or
+`/customnode/install`. Read-only metadata enumeration only — per the
+[METHODOLOGY restraint ethic](https://github.com/Nicholas-Kloster/AI-LLM-Infrastructure-OSINT/tree/main/methodology).
+
+**Field validation:** `103.192.253.238:8575` (NVIDIA L40S, 1.08 TB RAM,
+ComfyUI 0.3.60, Python 3.11.11, PyTorch 2.6.0+cu126, argv exposed). Plus
+~127 confirmed unauth ComfyUI hosts in the first 7% of the survey
+(extrapolating to ~1,700 across the 50K corpus).
+
 ## [v1.9.5] - 2026-05-15
 
 ### Added: container / k8s / MCP / medical-AI fingerprint expansion (13 new platforms)

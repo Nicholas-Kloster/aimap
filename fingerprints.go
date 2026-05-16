@@ -130,6 +130,74 @@ var Fingerprints = []Fingerprint{
 		},
 		Severity: "medium",
 	},
+
+	// ── Image generation / diffusion ────────────────────────────
+	// Field-validated 2026-05-16 across 50K-host ComfyUI Shodan corpus
+	// (`product:"ComfyUI"`). Strict JSON-shape verification: shell-only
+	// SPAs and reverse-proxy frontends that serve identical HTML for any
+	// path do NOT match — only hosts returning real ComfyUI API JSON do.
+	// Operator argv exposed via /system_stats system.argv field.
+	{
+		Name:         "ComfyUI",
+		DefaultPorts: []int{8188, 7860, 3000, 8000, 8080},
+		Probes: []Probe{
+			{Path: "/system_stats", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "system"},
+				{Type: "body_contains", Value: "comfyui_version"},
+				{Type: "body_contains", Value: "python_version"},
+			}},
+		},
+		Severity: "critical", // ComfyUI-Manager custom-node install = unauth RCE by design
+	},
+	// AUTOMATIC1111 / Forge / SD.Next — Gradio-on-7860 SPAs. Brand string lives
+	// in JS bundle so Shodan title indexer misses; /sdapi/v1/options is the
+	// stable JSON-shape anchor when API mode enabled.
+	{
+		Name:         "AUTOMATIC1111 / SD WebUI",
+		DefaultPorts: []int{7860, 7861, 7862, 3000, 80, 443},
+		Probes: []Probe{
+			{Path: "/sdapi/v1/options", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "sd_model_checkpoint"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "InvokeAI",
+		DefaultPorts: []int{9090, 9091},
+		Probes: []Probe{
+			{Path: "/api/v1/app/version", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "version"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "Fooocus",
+		DefaultPorts: []int{7865, 7860},
+		Probes: []Probe{
+			// Fooocus exposes a Gradio config endpoint with its name marker.
+			{Path: "/config", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "Fooocus"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "SwarmUI",
+		DefaultPorts: []int{7801},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "SwarmUI"},
+			}},
+		},
+		Severity: "high",
+	},
 	{
 		Name:         "SGLang",
 		DefaultPorts: []int{30000, 8889},
