@@ -2,6 +2,48 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.4] - 2026-05-15
+
+### Added: `llama.cpp server` fingerprint + deep enumerator
+
+aimap previously missed `llama.cpp`-served HTTP endpoints, including the
+common deployment pattern where `llama-server` is colocated on port 11434
+(Ollama's default). Field instance: `194.233.71.223:11434` on 2026-05-15
+served Microsoft BitNet-b1.58-2B-4T unauth via llama.cpp and aimap PHASE-2
+reported "No AI/ML services identified" despite the explicit `Server:
+llama.cpp` HTTP header.
+
+New fingerprint with three alternative probes (any one matches):
+
+- `/v1/models` returning a body containing `"owned_by":"llamacpp"`
+  (OpenAI-compatible models endpoint, the most reliable conjunct)
+- `/props` returning JSON with `default_generation_settings` +
+  `chat_template` (server-info endpoint, exposes operator's persona config)
+- `/` with `Server: llama.cpp` header (banner fallback for stripped APIs)
+
+New `enumLlamaCpp` deep enumerator surfaces:
+
+- Loaded model IDs via `/v1/models`
+- Server config (`n_ctx`, `total_slots`, `chat_template` excerpt) via `/props`
+- `/completion` open-endpoint flag (POST is invocation; GET reachability
+  confirms the unauth inference surface)
+- Severity: critical when unauth (matching `enumOllama`'s posture)
+
+### Fixed: PHASE 3 deep-enum is now parallel
+
+The `runEnumerators` dispatcher iterated `services` **sequentially** even
+when `-threads N` was specified. On a 10,000-host Ollama corpus this meant
+~50 minutes of single-threaded HTTP probing while PHASE 1 (port discovery)
+and PHASE 2 (fingerprinting) ran with 100 concurrent goroutines as
+configured. The `-threads` flag now applies to PHASE 3 too via a worker-pool
+semaphore — measured: 100 hosts at threads=50 finishes in ~19s where the
+prior implementation took ~145s (and a 10K-host run that would have taken
+hours completes in minutes).
+
+The per-host enumerator logic is unchanged; only the dispatcher's scheduling
+discipline. Output ordering preserved via pre-sized `results` slice indexed
+by service index.
+
 ## [v1.9.3] - 2026-05-14
 
 ### Code-assistant fingerprints (category 09)

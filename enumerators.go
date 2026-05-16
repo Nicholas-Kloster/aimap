@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -100,21 +101,42 @@ func scanSecrets(content string, r *EnumResult) {
 }
 
 // ── Dispatcher ──────────────────────────────────────────────────────
+//
+// 2026-05-15: parallelized PHASE 3 via a worker pool. Prior implementation
+// iterated `services` sequentially with a single HTTP client; on a corpus
+// of ~10,000 confirmed Ollama hosts that meant 50+ minutes of wall-clock
+// where threads=100 was set by the user. The flag now flows from main and
+// caps concurrent enumerators at `threads` goroutines. Per-host work is
+// unchanged; only the dispatcher's scheduling discipline.
 
-func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool) []EnumResult {
+func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool, threads int) []EnumResult {
 	client := newHTTPClient(timeout)
-	var results []EnumResult
+	if threads < 1 {
+		threads = 20
+	}
 
-	for _, svc := range services {
-		if verbose {
-			fmt.Printf("    enumerating %s @ %s\n", svc.Service, svc.BaseURL)
-		}
-		var result EnumResult
-		switch svc.Service {
+	results := make([]EnumResult, len(services))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, threads)
+
+	for i := range services {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			svc := services[idx]
+			if verbose {
+				fmt.Printf("    enumerating %s @ %s\n", svc.Service, svc.BaseURL)
+			}
+			var result EnumResult
+			switch svc.Service {
 		case "Weaviate":
 			result = enumWeaviate(client, svc)
 		case "Ollama":
 			result = enumOllama(client, svc)
+		case "llama.cpp server":
+			result = enumLlamaCpp(client, svc)
 		case "ChromaDB":
 			result = enumChromaDB(client, svc)
 		case "Qdrant":
@@ -202,8 +224,10 @@ func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool
 		}
 		result.Findings = append(result.Findings, checkGeneric(client, svc)...)
 		result.RiskLevel = computeRisk(result)
-		results = append(results, result)
+		results[idx] = result
+		}(i)
 	}
+	wg.Wait()
 	return results
 }
 
@@ -379,6 +403,89 @@ func enumOllama(c *http.Client, svc ServiceMatch) EnumResult {
 		r.Findings = append(r.Findings, Finding{
 			Category: "access", Title: "/api/pull open — anyone can download new models",
 			Detail:   fmt.Sprintf("HTTP %d", st),
+			Severity: "critical",
+		})
+	}
+
+	return r
+}
+
+// ── llama.cpp server ────────────────────────────────────────────────
+//
+// llama.cpp ships its own HTTP server (`./llama-server`) exposing
+// /v1/models (OpenAI compat), /v1/chat/completions, /completion, /props
+// (server-info), /health, /props for chat-template + n_ctx + total_slots.
+// When deployed on port 11434 it overlaps Ollama; the fingerprint
+// distinguishes them via /v1/models response shape and Server header.
+// Field instance: 194.233.71.223 (2026-05-15) — Contabo SG host serving
+// Microsoft BitNet-b1.58-2B-4T unauth with chat-template + completion
+// endpoints exposed.
+
+func enumLlamaCpp(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+	r.AuthStatus = "none"
+
+	// /v1/models — OpenAI-compatible model list
+	if st, _, body, err := httpGET(c, b+"/v1/models"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			data := jArray(m, "data")
+			var ids []string
+			for _, e := range data {
+				if mm, ok := e.(map[string]interface{}); ok {
+					if id := jStr(mm, "id"); id != "" {
+						ids = append(ids, id)
+					}
+				}
+			}
+			if len(ids) > 0 {
+				r.RawData["models"] = ids
+				r.Details = append(r.Details, "Models: "+strings.Join(ids, ", "))
+				r.Findings = append(r.Findings, Finding{
+					Category: "models", Title: fmt.Sprintf("%d model(s) loaded", len(ids)),
+					Severity: "high",
+				})
+			}
+		}
+	}
+
+	// /props — server-side config (n_ctx, total_slots, chat_template)
+	if st, _, body, err := httpGET(c, b+"/props"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["props"] = m
+			if dg := jMap(m, "default_generation_settings"); dg != nil {
+				if nctx := jFloat(dg, "n_ctx"); nctx > 0 {
+					r.Details = append(r.Details, fmt.Sprintf("n_ctx=%d", int(nctx)))
+				}
+			}
+			if ts := jFloat(m, "total_slots"); ts > 0 {
+				r.Details = append(r.Details, fmt.Sprintf("total_slots=%d", int(ts)))
+			}
+			if ct := jStr(m, "chat_template"); ct != "" {
+				excerpt := ct
+				if len(excerpt) > 120 {
+					excerpt = excerpt[:120] + "..."
+				}
+				r.RawData["chat_template_excerpt"] = excerpt
+				r.Findings = append(r.Findings, Finding{
+					Category: "config", Title: "chat_template exposed via /props",
+					Detail: "Custom system-prompt / persona configuration disclosed",
+					Severity: "medium",
+				})
+			}
+		}
+	}
+
+	// /health — liveness
+	if st, _, _, err := httpGET(c, b+"/health"); err == nil && st == 200 {
+		r.Details = append(r.Details, "health: ok")
+	}
+
+	// /completion — flag the unauth inference endpoint without invoking it
+	if st, _, _, err := httpGET(c, b+"/completion"); err == nil && st != 404 {
+		r.Findings = append(r.Findings, Finding{
+			Category: "access", Title: "/completion open — anyone can run unauth inference",
+			Detail:   fmt.Sprintf("HTTP %d (POST is the invocation method; GET probe confirms reachability)", st),
 			Severity: "critical",
 		})
 	}

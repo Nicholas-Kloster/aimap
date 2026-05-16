@@ -87,6 +87,31 @@ var Fingerprints = []Fingerprint{
 		},
 		Severity: "high",
 	},
+	// llama.cpp HTTP server — frequently co-located on port 11434 (Ollama's
+	// default) when operators deploy llama.cpp as an "Ollama-compatible"
+	// service. Field-validated 2026-05-15 on 194.233.71.223. Three
+	// alternative probes (any one matches): /v1/models (OpenAI-compat surface),
+	// /props (llama.cpp-native server-info), and the Server-header fallback.
+	{
+		Name:         "llama.cpp server",
+		DefaultPorts: []int{8080, 8000, 11434},
+		Probes: []Probe{
+			{Path: "/v1/models", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: `"owned_by":"llamacpp"`},
+			}},
+			{Path: "/props", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "default_generation_settings"},
+				{Type: "body_contains", Value: "chat_template"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "header_contains", Field: "Server", Value: "llama.cpp"},
+			}},
+		},
+		Severity: "high",
+	},
 	{
 		Name:         "vLLM",
 		DefaultPorts: []int{8000, 80, 443},

@@ -154,7 +154,7 @@ func main() {
 	// ── Phase 3: Deep Enumeration ────────────────────────────────
 	printPhase(3, "DEEP ENUMERATION")
 
-	enumResults := runEnumerators(services, *timeout, *verbose)
+	enumResults := runEnumerators(services, *timeout, *verbose, *threads)
 
 	for _, er := range enumResults {
 		printServiceCard(er)
