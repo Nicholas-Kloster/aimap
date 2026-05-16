@@ -2,6 +2,40 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.5] - 2026-05-15
+
+### Added: container / k8s / MCP / medical-AI fingerprint expansion (13 new platforms)
+
+**Container & orchestration tier** (extends category 12 coverage):
+
+- **Docker daemon** — `/version` returning Docker version JSON, unauth port 2375 by framework spec
+- **Kubernetes API** — `/api` + `/version` returning K8s API surface
+- **etcd** — `/version` JSON + `/v2/keys` or `/v3/kv` reachable
+- **Vault** — `/v1/sys/seal-status` + `/v1/sys/health` (sealed-state visibility regardless of auth)
+- **Consul** — `/v1/agent/self` + `/v1/status/leader`
+- **Portainer** — `/api/system/status` + UI title fingerprint
+- **Kubelet** — `/healthz` on 10250 + `/pods` if anonymous-auth enabled
+
+**MCP (Model Context Protocol) tier** (extends category 10):
+
+- **MCP Server** (generic, 4 alternative probes) — covers FastMCP / Streamable-HTTP / `mcp-server` Server-header variants; empirical population coverage 26/88 (30%) on FastMCP 406-jsonrpc, ~18/88 (20%) on JSON-RPC -32600, ~6/88 (7%) on 405-method-not-allowed-with-POST, ~5/88 (6%) on Server-header. Built against the 2026-05-15 88-host MCP refresh corpus.
+
+**Medical-AI tier** (extends category 28, ties to the medical-edge-ai survey):
+
+- **MONAI Label Server** — `/info/` with `trainers` + `strategies` + `scoring` + `datastore` fields
+- **Orthanc DICOM Server** — REST surface
+- **dcm4che / dcm4chee-arc DICOM Archive** — `/dcm4chee-arc/aets` array
+- **DICOMweb (QIDO-RS)** — `/studies` array + DICOM tag `0020000D`
+- **NVIDIA NIM** — `/v1/metadata` with `modelInfo` array
+
+### Added: `header_not_contains` match-condition type
+
+Header-level anti-match for fingerprints. Probe FAILS if the specified header value contains the substring; PASSES if the header is absent OR doesn't contain it. Used to exclude services that self-identify via Server / X-Powered-By headers but otherwise share JSON shape with the target fingerprint.
+
+### Tests
+
+`fingerprints_container_test.go` (706 lines) + `fingerprints_mcp_test.go` (350 lines) — fixture-based coverage for the new fingerprint conjuncts. `go test ./...` clean.
+
 ## [v1.9.4] - 2026-05-15
 
 ### Added: `llama.cpp server` fingerprint + deep enumerator

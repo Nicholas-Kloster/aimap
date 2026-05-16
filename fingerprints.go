@@ -13,12 +13,18 @@ import (
 
 type MatchCond struct {
 	// Type: status_code, body_contains, body_not_contains, json_field,
-	// json_array, header_contains.
+	// json_array, header_contains, header_not_contains.
 	//
 	// body_not_contains is an anti-match: the probe FAILS if the substring
 	// appears in the body. Used to exclude false-positive shapes (e.g.,
 	// a marketing-site reflection that contains the brand name but isn't a
 	// self-hosted instance).
+	//
+	// header_not_contains is a header-level anti-match: the probe FAILS if
+	// the specified header field's value contains the substring. Used to
+	// exclude services that identify themselves via Server/X-Powered-By headers
+	// (e.g., Server: Milvus/ on a port that also serves {"status":"ok"}).
+	// If the header is absent, the anti-match PASSES (absence != presence).
 	Type  string
 	Field string
 	Value string
@@ -89,9 +95,10 @@ var Fingerprints = []Fingerprint{
 	},
 	// llama.cpp HTTP server — frequently co-located on port 11434 (Ollama's
 	// default) when operators deploy llama.cpp as an "Ollama-compatible"
-	// service. Field-validated 2026-05-15 on 194.233.71.223. Three
-	// alternative probes (any one matches): /v1/models (OpenAI-compat surface),
-	// /props (llama.cpp-native server-info), and the Server-header fallback.
+	// service. Field-validated 2026-05-15 on 194.233.71.223. Two
+	// conjunctive-within-probe paths: /v1/models (the OpenAI-compat surface)
+	// and /props (the llama.cpp-native server-info endpoint). Either probe
+	// hitting confirms llama.cpp.
 	{
 		Name:         "llama.cpp server",
 		DefaultPorts: []int{8080, 8000, 11434},
@@ -105,6 +112,7 @@ var Fingerprints = []Fingerprint{
 				{Type: "json_field", Field: "default_generation_settings"},
 				{Type: "body_contains", Value: "chat_template"},
 			}},
+			// Server-header + body marker as a third alternative
 			{Path: "/", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
 				{Type: "header_contains", Field: "Server", Value: "llama.cpp"},
@@ -178,6 +186,271 @@ var Fingerprints = []Fingerprint{
 			}},
 		},
 		Severity: "medium",
+	},
+
+	// ── Model Context Protocol (MCP) servers ────────────────────────────
+	// Designed against 88 unauth MCP servers observed in the wild (2026-05-15
+	// MCP refresh — see verify/get_mcp_signal.jsonl in the recon artifact).
+	// MCP servers run on heterogeneous ports and frameworks; this fingerprint
+	// uses 5 disjunctive probes against GET /mcp to maximize coverage of the
+	// empirically-observed response shapes.
+	//
+	// Threat class: MCP servers expose tools, resources, and prompts to LLM
+	// clients. Per the April 2026 OX Security disclosure, every MCP SDK has
+	// systemic RCE-class behavior by design (tool execution is the protocol).
+	// Anthropic has declined to modify this; the protocol IS the bypass
+	// when no auth wraps it. Severity: high.
+	{
+		Name:         "MCP Server",
+		DefaultPorts: []int{443, 3000, 3001, 5000, 5001, 8000, 8001, 8080, 8081, 8088, 8443, 8888, 9000, 9090},
+		Probes: []Probe{
+			// Probe 1: FastMCP / Streamable HTTP shape — 406 Not Acceptable + JSON-RPC body.
+			// Most common response when GET /mcp hits a server expecting POST with proper Accept.
+			// Empirical coverage: 26/88 (30%) of observed unauth MCP servers.
+			{Path: "/mcp", Matches: []MatchCond{
+				{Type: "status_code", Value: "406"},
+				{Type: "body_contains", Value: "jsonrpc"},
+			}},
+			// Probe 2: 405 Method Not Allowed + body says POST. Less common but distinct.
+			// Empirical coverage: ~6/88 (7%) — only servers that include Method-Not-Allowed in body AND mention POST.
+			{Path: "/mcp", Matches: []MatchCond{
+				{Type: "status_code", Value: "405"},
+				{Type: "body_contains", Value: "Method Not Allowed"},
+				{Type: "body_contains", Value: "POST"},
+			}},
+			// Probe 3: Server header explicitly identifies as mcp-server*. High-confidence single signal.
+			// Empirical coverage: 5/88 (6%) — servers built with mcp-framework that set Server: mcp-server/x.y.z.
+			{Path: "/mcp", Matches: []MatchCond{
+				{Type: "header_contains", Field: "Server", Value: "mcp-server"},
+			}},
+			// Probe 4: JSON-RPC error code -32600 (Invalid Request) in body + jsonrpc literal.
+			// FastMCP servers return this when GET hits a POST-only endpoint with proper JSON-RPC framing.
+			// Empirical coverage: 18/88 (20%) — overlaps with Probe 1 but catches some non-406 cases.
+			{Path: "/mcp", Matches: []MatchCond{
+				{Type: "body_contains", Value: "-32600"},
+				{Type: "body_contains", Value: "jsonrpc"},
+			}},
+			// Probe 5: 405 + Allow header contains "post" (case-insensitive). The few servers
+			// that send a proper Allow header on a 405 rejection.
+			// Empirical coverage: 6/88 (7%).
+			{Path: "/mcp", Matches: []MatchCond{
+				{Type: "status_code", Value: "405"},
+				{Type: "header_contains", Field: "Allow", Value: "post"},
+			}},
+			// Probe 6: 400 Bad Request + body contains the literal "Mcp-Session-Id" header
+			// name. The Streamable HTTP transport (2025-03-26 spec) requires this session
+			// header; Kestrel/.NET-based MCP servers emit "Bad Request: Mcp-Session-Id
+			// header is required" when the header is missing. Highly specific signal —
+			// no non-MCP service emits this exact string. Added 2026-05-15 after a live
+			// shakedown on 120.24.170.57:5001 (Vschool.GatewayApi) which exhibited this
+			// shape and was missed by Probes 1-5.
+			{Path: "/mcp", Matches: []MatchCond{
+				{Type: "status_code", Value: "400"},
+				{Type: "body_contains", Value: "Mcp-Session-Id"},
+			}},
+			// Probe 7: body contains the literal "Mcp-Session-Id" anywhere — fallback for
+			// servers that emit the spec header name on non-400 statuses. The Mcp-Session-Id
+			// literal is unique to the MCP Streamable HTTP transport spec.
+			{Path: "/mcp", Matches: []MatchCond{
+				{Type: "body_contains", Value: "Mcp-Session-Id"},
+			}},
+			// Probe 8: root path /. Some MCP servers (notably Kestrel/.NET ones like
+			// Vschool.GatewayApi) bind the MCP endpoint at the root, NOT at /mcp. They
+			// emit "Bad Request: Mcp-Session-Id header is required" with status 400 on
+			// GET /. Added 2026-05-15 after the live Vschool shakedown showed Probes 6+7
+			// missing this case because they probed /mcp (which returns 404 on Kestrel
+			// MCP) instead of / (which returns the spec error).
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "400"},
+				{Type: "body_contains", Value: "Mcp-Session-Id"},
+			}},
+			// Probe 9: root path / + body contains "Mcp-Session-Id" literal anywhere.
+			// Maximally permissive fallback for the root-bound MCP shape — catches
+			// any server that emits the spec header literal on root, regardless of
+			// status code. The literal is spec-unique.
+			{Path: "/", Matches: []MatchCond{
+				{Type: "body_contains", Value: "Mcp-Session-Id"},
+			}},
+		},
+		Severity: "high",
+	},
+
+	// ── Container / orchestration tier ──────────────────────────────────
+	// Added 2026-05-15 after the cross-class Critter validation showed
+	// menlohunt was the only tool catching K8s/Docker/etcd/Vault/Consul/
+	// Portainer/Kubelet on a 32-host container survey. aimap fingerprints
+	// for these complete the chain's identification layer so the population
+	// is visible regardless of which tool runs.
+	//
+	// Fixture sources: live GETs against the indicated targets in the
+	// 2026-05-15 container survey. See:
+	//   /home/cowboy/recon/2026-05-15-containers/verify/shapes.jsonl
+	//
+	// Kubelet Probe 1 note: body "ok" alone is a naked keyword per CLAUDE.md
+	// discipline. This probe relies on DefaultPorts [10250, 10255] filtering
+	// for soundness — under -scan-all-fingerprints it may false-positive on
+	// generic health endpoints returning 200 "ok". Spec authority accepted;
+	// documented here so the next hand knows the tradeoff.
+	{
+		// etcd: Kubernetes cluster state store. Unauth read = full cluster
+		// compromise (secrets, kubeconfigs, service-account tokens).
+		// Replaces the previous weak entry (naked json_field, no status_code
+		// anchor). Ports: 2379 (client), 2380 (peer).
+		// Fixture: 101.53.134.137:2379, 1.116.218.232:2379 → GET /version 200
+		//   body: {"etcdserver":"3.5.12","etcdcluster":"3.5.0"}
+		Name:         "etcd",
+		DefaultPorts: []int{2379, 2380},
+		Probes: []Probe{
+			{Path: "/version", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "etcdserver"},
+				{Type: "body_contains", Value: "etcdcluster"},
+			}},
+		},
+		Severity: "critical",
+	},
+	{
+		// HashiCorp Vault: secrets manager. /v1/sys/health returns 200 with
+		// initialized + sealed status fields. Auth-required Vault is still
+		// sensitive intel (unsealed + initialized = prime target).
+		// Fixture: 104.236.5.62:8200 → GET /v1/sys/health 200
+		//   body: {"initialized":true,"sealed":false,"standby":false,...}
+		Name:         "Vault",
+		DefaultPorts: []int{8200},
+		Probes: []Probe{
+			{Path: "/v1/sys/health", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "initialized"},
+				{Type: "body_contains", Value: "sealed"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		// Docker daemon (unauthenticated TCP socket). Unauth = host RCE via
+		// docker run --privileged -v /:/host. Two probes cover the two
+		// observed body shapes: (a) Server header starts with Docker/,
+		// (b) ApiVersion + GoVersion in body (some daemons omit the header).
+		// Fixture A: 102.129.185.27:2375 → GET /version 200, Server: Docker/20.10.0
+		//   body: {"Platform":{"Name":"Docker Engine - Community"},"Components":[...
+		// Fixture B: 129.151.144.78:2375 → GET /version 200
+		//   body: {"ApiVersion":"1.44","GitCommit":"v25.0.5","GoVersion":"go1.21.8",...
+		Name:         "Docker daemon",
+		DefaultPorts: []int{2375, 2376},
+		Probes: []Probe{
+			{Path: "/version", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "header_contains", Field: "Server", Value: "Docker/"},
+			}},
+			{Path: "/version", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "ApiVersion"},
+				{Type: "body_contains", Value: "GoVersion"},
+				{Type: "body_not_contains", Value: "gitVersion"}, // anti-K8s API /version (2026-05-15)
+			}},
+		},
+		Severity: "critical",
+	},
+	{
+		// Kubernetes API server. Two probe shapes observed in the wild:
+		// Probe 1: /version 200 → gitVersion + gitCommit (version disclosure even when auth enforced)
+		// Probe 2: /api 403 → system:anonymous forbidden message (canonical K8s anon-rejection)
+		// Fixture 1: 109.107.36.44:6443 → GET /version 200
+		//   body: {"major":"1","minor":"32","gitVersion":"v1.32.1","gitCommit":"...
+		// Fixture 2: 101.89.57.65:6443 → GET /api 403
+		//   body: {"kind":"Status","apiVersion":"v1","status":"Failure","message":"forbidden: User \"system:anonymous\"...
+		Name:         "Kubernetes API",
+		DefaultPorts: []int{6443, 8443},
+		Probes: []Probe{
+			{Path: "/version", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "gitVersion"},
+				{Type: "body_contains", Value: "gitCommit"},
+			}},
+			{Path: "/api", Matches: []MatchCond{
+				{Type: "status_code", Value: "403"},
+				{Type: "body_contains", Value: "system:anonymous"},
+				{Type: "body_contains", Value: "forbidden"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		// HashiCorp Consul: service mesh + KV store. /v1/agent/self returns
+		// full node config including Datacenter + NodeName (topology disclosure).
+		// Fixture: 103.251.165.56:8500 → GET /v1/agent/self 200
+		//   body: {"Config":{"Datacenter":"main","PrimaryDatacenter":"main","NodeName":"nl-lt-vpn01",...
+		Name:         "Consul",
+		DefaultPorts: []int{8500},
+		Probes: []Probe{
+			{Path: "/v1/agent/self", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "Datacenter"},
+				{Type: "body_contains", Value: "NodeName"},
+			}},
+			// Probe 2: /v1/catalog/services returns JSON object where "consul"
+			// key is always present (Consul lists its own service). No positive
+			// fixture captured in the 2026-05-15 survey — only 500s on that
+			// path from isolated-agent nodes. Probe shipped on spec authority.
+			{Path: "/v1/catalog/services", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "consul"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		// Portainer: Docker/K8s management UI. /api/status returns Version +
+		// InstanceID — enough to confirm Portainer and version-target it.
+		// Default admin signup = cluster takeover.
+		// Fixture: 103.219.226.52:9000 → GET /api/status 200
+		//   body: {"Version":"2.19.5","InstanceID":"4d15c813-...","DemoEnvironment":{...
+		Name:         "Portainer",
+		DefaultPorts: []int{9000, 9443},
+		Probes: []Probe{
+			{Path: "/api/status", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "Version"},
+				{Type: "body_contains", Value: "InstanceID"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		// Kubelet: per-node K8s agent. Anonymous /exec or /run = cluster-wide
+		// RCE. Even auth-protected Kubelet on :10250 is operator-intel disclosure.
+		// Probe 1: /healthz 200 text/plain "ok" — anonymous Kubelet, no auth required.
+		//   Fixture: 175.178.65.155:10250 → GET /healthz 200, Content-Type: text/plain; charset=utf-8, body: ok
+		//   FP fix (2026-05-15): added Content-Type text/plain + body_not_contains "{"
+		//   to exclude vector DBs (Qdrant/Milvus) and CrateDB returning {"status":"ok"}
+		//   as JSON. Real Kubelet sends a 2-byte plaintext body — not a JSON object.
+		// Probe 2: /healthz 401 text/plain "Unauthorized" — auth-protected Kubelet.
+		//   Fixture: 172.236.15.129:10250 → GET /healthz 401, Content-Type: text/plain; charset=utf-8, body: Unauthorized
+		//   FP fix (2026-05-15): added Content-Type text/plain to exclude nginx-fronted
+		//   401 responses that return text/html (e.g. 43.155.71.160 nginx reverse proxy).
+		// Probe 3: /pods 200 "PodList" — anonymous Kubelet pod listing.
+		//   No positive fixture captured in the 2026-05-15 survey (all :10250
+		//   /pods returns were 401). Probe shipped on spec authority.
+		Name:         "Kubelet",
+		DefaultPorts: []int{10250, 10255},
+		Probes: []Probe{
+			{Path: "/healthz", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "header_contains", Field: "Content-Type", Value: "text/plain"},
+				{Type: "body_contains", Value: "ok"},
+				{Type: "body_not_contains", Value: "{"}, // exclude JSON bodies (Qdrant/Milvus/CrateDB)
+			}},
+			{Path: "/healthz", Matches: []MatchCond{
+				{Type: "status_code", Value: "401"},
+				{Type: "header_contains", Field: "Content-Type", Value: "text/plain"},
+				{Type: "body_contains", Value: "Unauthorized"},
+			}},
+			{Path: "/pods", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "PodList"},
+			}},
+		},
+		Severity: "critical",
 	},
 
 	// ── ML platforms ────────────────────────────────────────────
@@ -380,6 +653,9 @@ var Fingerprints = []Fingerprint{
 				{Type: "status_code", Value: "200"},
 				{Type: "json_field", Field: "status"},
 				{Type: "json_field", Field: "version"},
+				{Type: "body_not_contains", Value: "cluster_name"}, // anti-CrateDB / anti-ES
+				{Type: "body_not_contains", Value: "build_hash"},   // anti-CrateDB / anti-ES
+				{Type: "body_not_contains", Value: "qdrant"},       // anti-Qdrant
 			}},
 			{Path: "/", Matches: []MatchCond{
 				{Type: "body_contains", Value: "langfuse"},
@@ -593,19 +869,6 @@ var Fingerprints = []Fingerprint{
 			}},
 		},
 		Severity: "medium",
-	},
-	{
-		Name:         "etcd",
-		DefaultPorts: []int{2379},
-		Probes: []Probe{
-			{Path: "/health", Matches: []MatchCond{
-				{Type: "json_field", Field: "health"},
-			}},
-			{Path: "/version", Matches: []MatchCond{
-				{Type: "json_field", Field: "etcdserver"},
-			}},
-		},
-		Severity: "critical",
 	},
 	{
 		Name:         "MinIO",
@@ -1545,8 +1808,11 @@ var Fingerprints = []Fingerprint{
 			{Path: "/api/v1/health", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
 				{Type: "body_contains", Value: `"status":"ok"`},
-				{Type: "body_not_contains", Value: "cluster_name"},
-				{Type: "body_not_contains", Value: "active_shards"},
+				{Type: "body_not_contains", Value: "cluster_name"}, // anti-ES, anti-CrateDB
+				{Type: "body_not_contains", Value: "active_shards"}, // anti-ES
+				{Type: "body_not_contains", Value: "qdrant"},  // anti-Qdrant (2026-05-15 FP)
+				{Type: "body_not_contains", Value: "milvus"},  // anti-Milvus body (2026-05-15 FP)
+				{Type: "header_not_contains", Field: "Server", Value: "Milvus/"}, // anti-Milvus Server header
 			}},
 			{Path: "/", Matches: []MatchCond{
 				{Type: "status_code", Value: "200"},
@@ -1587,6 +1853,119 @@ var Fingerprints = []Fingerprint{
 				{Type: "status_code", Value: "200"},
 				{Type: "body_contains", Value: "pezzo"},
 				{Type: "body_contains", Value: "<title>"},
+			}},
+		},
+		Severity: "high",
+	},
+	// ── Medical & edge AI (Survey 28, 2026-05-15) ───────────────────
+	{
+		Name: "MONAI Label Server",
+		// Primary source: github.com/Project-MONAI/MONAILabel
+		// monailabel/main.py: -p/--port default=8000, -i/--host default=0.0.0.0
+		// monailabel/interfaces/app.py info() returns meta with keys:
+		//   name, description, version, labels, models, trainers, strategies,
+		//   scoring, train_stats, datastore
+		// RBAC opt-in via MONAI_LABEL_AUTH_ROLE_USER setting — default off.
+		// Conjunctive marker: `trainers` + `strategies` + `scoring` together
+		// are not co-emitted by any other fingerprinted platform.
+		// Endpoint path is `/info/` (trailing slash); the router prefix is
+		// "/info" and the handler binds "/" relative to that.
+		// Tier-A* (auth optional, off-by-default).
+		DefaultPorts: []int{8000, 8001, 80, 443},
+		Probes: []Probe{
+			{Path: "/info/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "trainers"},
+				{Type: "json_field", Field: "strategies"},
+				{Type: "json_field", Field: "scoring"},
+				{Type: "json_field", Field: "datastore"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name: "Orthanc DICOM Server",
+		// Primary source: Orthanc REST book at orthanc.uclouvain.be
+		// /system returns JSON with Name="Orthanc", DicomAet, DicomPort,
+		// HttpPort, ApiVersion, Version, DatabaseVersion, PluginsEnabledInDb.
+		// Default ports: 8042 (HTTP REST), 4242 (DICOM TCP).
+		// RemoteAccessAllowed defaults false in modern config.json — when
+		// enabled without AuthenticationEnabled or RegisteredUsers, instance
+		// is fully unauthenticated. Default creds historically orthanc:orthanc
+		// (when auth enabled but unchanged).
+		// Tier-A* (config-gated remote access; once enabled, often unauth).
+		DefaultPorts: []int{8042, 8043, 80, 443, 8080},
+		Probes: []Probe{
+			{Path: "/system", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "DicomAet"},
+				{Type: "json_field", Field: "ApiVersion"},
+				{Type: "body_contains", Value: "Orthanc"},
+			}},
+		},
+		Severity: "critical",
+	},
+	{
+		Name: "dcm4che / dcm4chee-arc DICOM Archive",
+		// Primary source: github.com/dcm4che/dcm4chee-arc-light
+		// Web admin UI at /dcm4chee-arc/ui2/ (Keycloak-fronted in modern builds).
+		// /dcm4chee-arc/aets returns JSON list of Application Entities when
+		// security relaxed; otherwise 401/302 to Keycloak — both confirm
+		// platform identity. Default deployment runs on Wildfly with port 8080.
+		// Tier-C (auth-on-default via Keycloak) but Keycloak unconfigured /
+		// auth-relaxed deployments expose AE list + study queries.
+		DefaultPorts: []int{8080, 8443, 80, 443},
+		Probes: []Probe{
+			{Path: "/dcm4chee-arc/aets", Matches: []MatchCond{
+				{Type: "json_array"},
+			}},
+			{Path: "/dcm4chee-arc/", Matches: []MatchCond{
+				{Type: "body_contains", Value: "dcm4chee"},
+			}},
+		},
+		Severity: "critical",
+	},
+	{
+		Name: "DICOMweb (QIDO-RS)",
+		// Standard: DICOM PS3.18 (DICOMweb). QIDO-RS exposes /studies,
+		// /studies/{study}/series, /studies/{study}/series/{series}/instances
+		// returning Content-Type: application/dicom+json with DICOM tag keys
+		// (8-hex-digit field names like "0020000D" StudyInstanceUID,
+		// "00100010" PatientName, "00100020" PatientID).
+		// Conjunctive: JSON array root + a canonical DICOM tag key. The tag
+		// pattern is what disambiguates a DICOMweb response from any other
+		// JSON-array endpoint — a naked /studies path is too generic.
+		// Tier-A* (operator-configured; commonly exposed for cross-site
+		// research access without auth).
+		DefaultPorts: []int{8080, 8042, 443, 80, 8443},
+		Probes: []Probe{
+			{Path: "/studies", Matches: []MatchCond{
+				{Type: "json_array"},
+				{Type: "body_contains", Value: "0020000D"},
+			}},
+			{Path: "/dicomweb/studies", Matches: []MatchCond{
+				{Type: "json_array"},
+				{Type: "body_contains", Value: "0020000D"},
+			}},
+		},
+		Severity: "critical",
+	},
+	{
+		Name: "NVIDIA NIM",
+		// Primary source: NVIDIA NIM container API reference.
+		// NIM microservices expose OpenAI-compatible /v1/* plus a NIM-specific
+		// /v1/metadata returning {"modelInfo":[...]} with `shortName` containing
+		// the NIM model id (e.g. "meta/llama3-8b-instruct").
+		// /v1/health/ready returns 200 when warm. Endpoint identity comes from
+		// the /v1/metadata `modelInfo` array (OpenAI-compat servers don't ship
+		// this surface) plus the `nvcr.io` or `nim-` substring in headers/body.
+		// Tier-A* (default container exposes :8000 without auth; gating is the
+		// operator's job via reverse proxy).
+		DefaultPorts: []int{8000, 8080, 80, 443},
+		Probes: []Probe{
+			{Path: "/v1/metadata", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "modelInfo"},
 			}},
 		},
 		Severity: "high",
@@ -1783,6 +2162,12 @@ func evalMatch(mc MatchCond, status int, headers map[string]string, body []byte)
 			return strings.Contains(strings.ToLower(v), strings.ToLower(mc.Value))
 		}
 		return false
+	case "header_not_contains":
+		// Anti-match: PASSES if the header is absent OR its value doesn't contain the substring.
+		if v, ok := headers[mc.Field]; ok {
+			return !strings.Contains(strings.ToLower(v), strings.ToLower(mc.Value))
+		}
+		return true // header absent = not-contains = pass
 	}
 	return false
 }
