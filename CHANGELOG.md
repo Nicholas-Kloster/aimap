@@ -2,6 +2,54 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.7] - 2026-05-16
+
+### Fixed: ComfyUI-Manager presence detection (status≠404 not status==200)
+
+The 2026-05-16 image-gen survey caught a fingerprint bug — `enumComfyUI`
+checked `/customnode/getlist` for `status == 200 + body markers`, but real
+Manager-loaded ComfyUI hosts frequently return 500/502/503 (Manager
+endpoint exists but the catalog-fetch errored — no outbound internet,
+slow connection, etc.). Field instance: `104.236.42.246:8188` had
+`--enable-manager` in argv but the survey reported `has_manager=false`.
+
+Fix: probe now treats `status != 404 && status != 0` (network error) as
+Manager-present, with refined detail messaging:
+- `200 + body markers` → "Confirmed: Manager catalog returned"
+- `500/502/503` → "Manager loaded but catalog fetch errored"
+- Other non-404 → "Endpoint present but unusual status"
+
+`status == 404` remains the only "Manager not installed" signal.
+
+### Added: agent-memory + data-labeling + vector-DB-stragglers fingerprint expansion (11 platforms)
+
+Companion fingerprints for the 2026-05-16 4-survey batch — productizing
+the manual probe knowledge from each survey.
+
+**Agent-memory tier** (severity: medium — Tier-C confirmed at population scale):
+
+- **Mem0** — `/openapi.json` returning mem0 paths
+- **Argilla** — `/api/_info` returning version JSON
+- **Zep** — `/api/v2/health` with zep marker (field-validation pending)
+- **Letta** — `/v1/health` or `/openapi.json` with letta marker (field-validation pending)
+
+**Data-labeling tier**:
+
+- **Label Studio** — dual-path probe: `/api/version` (v1.x) OR `/version` (v0.7.x legacy)
+- **CVAT** — `/api/server/about` with cvat marker
+- **Doccano** — root HTML title check
+- **Prodigy** — root HTML title (Tier-A* — auth-free by design)
+
+**Vector-DB stragglers**:
+
+- **Apache Solr** (severity: critical) — `/solr/admin/info/system` with `solr-spec-version` marker. 516 hosts on Solr 7.6.0 in the field survey vulnerable to CVE-2019-17558 Velocity RCE.
+- **Meilisearch** — `/health` with `"status":"available"` JSON shape
+- **Typesense** — `/health` with `"ok":true` JSON shape (Tier-C confirmed: 0/9837 unauth)
+- **Vespa** — `/state/v1` with `config-server` marker
+
+All field-validated 2026-05-16 in the corresponding 4 surveys. Tests
+unchanged — existing fingerprint conjuncts validated against fixtures.
+
 ## [v1.9.6] - 2026-05-16
 
 ### Added: image-generation fingerprint pack (5 platforms)

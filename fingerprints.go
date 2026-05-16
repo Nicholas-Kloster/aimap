@@ -198,6 +198,180 @@ var Fingerprints = []Fingerprint{
 		},
 		Severity: "high",
 	},
+
+	// ── Agent-memory backends ───────────────────────────────────
+	// Field-validated 2026-05-16 across the agent-memory survey corpus.
+	// All Tier-C confirmed at population scale (auth-on-default holds);
+	// fingerprints are for accurate platform-class identification, not
+	// for unauth-detection — the data layer always requires the platform's
+	// documented auth gate (X-API-Key, session cookie, etc.).
+	{
+		Name:         "Mem0",
+		DefaultPorts: []int{8000, 8888, 8080, 3000},
+		Probes: []Probe{
+			// Mem0's /openapi.json contains "mem0" markers; /docs is the
+			// Swagger UI; /memories requires X-API-Key (Tier-C).
+			{Path: "/openapi.json", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "mem0"},
+				{Type: "json_field", Field: "paths"},
+			}},
+		},
+		Severity: "medium", // Tier-C — informational unless API key leaked elsewhere
+	},
+	{
+		Name:         "Argilla",
+		DefaultPorts: []int{80, 443, 6900},
+		Probes: []Probe{
+			// /api/_info is Argilla's canonical public endpoint — version-only
+			// disclosure. Data layer (/api/me) is auth-gated. Tier-C.
+			{Path: "/api/_info", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "version"},
+			}},
+		},
+		Severity: "medium",
+	},
+	// Zep + Letta fingerprints based on documented API shapes; field-validation
+	// pending because the 2026-05-16 survey's Shodan candidate pool was almost
+	// entirely false-positives (services with "zep"/"letta" string in HTML body
+	// but no actual API). Future port-first masscan on 8000 (Zep) / 8283 (Letta)
+	// on tier-2 cloud is the right way to surface the real population.
+	{
+		Name:         "Zep",
+		DefaultPorts: []int{8000, 5557},
+		Probes: []Probe{
+			// Zep v2 API: /api/v2/health returns JSON with status field
+			{Path: "/api/v2/health", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "zep"},
+			}},
+		},
+		Severity: "medium",
+	},
+	{
+		Name:         "Letta",
+		DefaultPorts: []int{8283, 8084},
+		Probes: []Probe{
+			// Letta (formerly MemGPT): /v1/health returns {"status":"ok"} with letta/memgpt marker
+			{Path: "/v1/health", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "letta"},
+			}},
+			// Alternative: /v1/agents requires auth in newer Letta; check OpenAPI
+			{Path: "/openapi.json", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "letta"},
+				{Type: "json_field", Field: "paths"},
+			}},
+		},
+		Severity: "medium",
+	},
+
+	// ── Data-labeling platforms ────────────────────────────────
+	// Field-validated 2026-05-16 in the data-labeling survey.
+	{
+		Name:         "Label Studio",
+		DefaultPorts: []int{8080, 8081, 80, 443, 8000},
+		Probes: []Probe{
+			// Modern v1.x API path
+			{Path: "/api/version", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "label-studio-os"},
+			}},
+			// Legacy v0.7.x path (still observed at population scale)
+			{Path: "/version", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "label-studio-backend"},
+			}},
+		},
+		Severity: "medium",
+	},
+	{
+		Name:         "CVAT",
+		DefaultPorts: []int{8080, 8081, 80, 443},
+		Probes: []Probe{
+			{Path: "/api/server/about", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "cvat"},
+			}},
+		},
+		Severity: "medium",
+	},
+	{
+		Name:         "Doccano",
+		DefaultPorts: []int{8000, 3000, 80, 443},
+		Probes: []Probe{
+			// Doccano root page title
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "doccano"},
+				{Type: "body_contains", Value: "<title>"},
+			}},
+		},
+		Severity: "medium",
+	},
+	{
+		Name:         "Prodigy",
+		DefaultPorts: []int{8080, 8081, 8000},
+		Probes: []Probe{
+			// Prodigy's annotation UI is auth-free by design (Tier-A*)
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "<title>Prodigy</title>"},
+			}},
+		},
+		Severity: "high", // unauth annotation UI exposed = workflow visibility
+	},
+
+	// ── Vector-DB stragglers (Solr / Meilisearch / Typesense / Vespa) ──
+	// Field-validated 2026-05-16 in the vector-DB stragglers survey.
+	// Solr 7.6.0 fleet (516 hosts unauth) is the headline finding —
+	// CVE-2019-17558 Velocity RCE class.
+	{
+		Name:         "Apache Solr",
+		DefaultPorts: []int{8983, 8984, 80, 443},
+		Probes: []Probe{
+			{Path: "/solr/admin/info/system", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "solr-spec-version"},
+			}},
+		},
+		Severity: "critical", // 7.x-default unauth + Velocity RCE = unauth RCE
+	},
+	{
+		Name:         "Meilisearch",
+		DefaultPorts: []int{7700, 80, 443},
+		Probes: []Probe{
+			{Path: "/health", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: `"status":"available"`},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		Name:         "Typesense",
+		DefaultPorts: []int{8108, 80, 443},
+		Probes: []Probe{
+			{Path: "/health", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: `"ok":true`},
+			}},
+		},
+		Severity: "medium", // Tier-C confirmed (0/9837 unauth in field survey)
+	},
+	{
+		Name:         "Vespa",
+		DefaultPorts: []int{8080, 19071},
+		Probes: []Probe{
+			{Path: "/state/v1", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "config-server"},
+			}},
+		},
+		Severity: "medium",
+	},
 	{
 		Name:         "SGLang",
 		DefaultPorts: []int{30000, 8889},

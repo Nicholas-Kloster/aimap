@@ -3184,16 +3184,27 @@ func enumComfyUI(c *http.Client, svc ServiceMatch) EnumResult {
 		}
 	}
 
-	// /customnode/getlist — ComfyUI-Manager presence (RCE-by-design surface)
-	if st, _, body, err := httpGET(c, b+"/customnode/getlist"); err == nil && st == 200 {
-		if strings.Contains(string(body), "ComfyUI-Manager") || strings.Contains(string(body), "custom_nodes") {
-			r.RawData["has_manager"] = true
-			r.Findings = append(r.Findings, Finding{
-				Category: "rce_by_design", Title: "ComfyUI-Manager present — unauth custom-node install = RCE",
-				Severity: "critical",
-				Detail:   "POST /customnode/install on an unauth ComfyUI installs arbitrary Python custom nodes. ComfyUI-Manager's design is that this is intended; auth is meant to gate it. No auth = anyone gets shell.",
-			})
+	// /customnode/getlist — ComfyUI-Manager presence (RCE-by-design surface).
+	// The endpoint exists only when ComfyUI-Manager is installed. Without
+	// Manager, ComfyUI returns 404. With Manager installed, the endpoint
+	// returns 200 (body has ComfyUI-Manager/custom_nodes markers) OR 500
+	// (Manager loaded but errored on the catalog fetch — common when the
+	// host has no outbound internet) OR 502/503 (Manager loaded but slow).
+	// Status != 404 + status != 0 (network error) is the right signal.
+	if st, _, body, err := httpGET(c, b+"/customnode/getlist"); err == nil && st != 404 && st != 0 {
+		r.RawData["has_manager"] = true
+		r.RawData["manager_probe_status"] = st
+		detail := "POST /customnode/install on an unauth ComfyUI installs arbitrary Python custom nodes. ComfyUI-Manager's design is that this is intended; auth is meant to gate it. No auth = anyone gets shell."
+		if st == 200 && (strings.Contains(string(body), "ComfyUI-Manager") || strings.Contains(string(body), "custom_nodes")) {
+			detail = "Confirmed: /customnode/getlist returns 200 with Manager catalog. " + detail
+		} else if st == 500 || st == 502 || st == 503 {
+			detail = fmt.Sprintf("Manager loaded (HTTP %d on /customnode/getlist suggests Manager endpoint exists but catalog fetch errored — Manager is present). %s", st, detail)
 		}
+		r.Findings = append(r.Findings, Finding{
+			Category: "rce_by_design", Title: "ComfyUI-Manager present — unauth custom-node install = RCE",
+			Severity: "critical",
+			Detail:   detail,
+		})
 	}
 
 	return r
