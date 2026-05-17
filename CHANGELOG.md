@@ -2,6 +2,68 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.9] - 2026-05-17
+
+### Added: extortion classifier in `enumElasticsearch` + `--exclude-compromised` CLI flag
+
+Yesterday's 2026-05-16 ES survey + today's 24-hour re-probe surfaced a
+methodology gap: aimap classified `read_me`-only hosts as "auth_status=none,
+index_count=1" rather than recognizing them as already-compromised by an
+automated extortion campaign. That misclassification fed forward into the
+disclosure pipeline as "your host is exposed" framing for hosts that were
+already wiped. Insight #28's retraction + Insight #29 codify the meta-lesson;
+this commit closes the loop in code so it doesn't recur.
+
+**What got added to `enumElasticsearch`:**
+
+After the `/_cat/indices` pass, walk the index name list for known
+extortion-marker names (`read_me`, `read_me_first`, `recover_data`,
+`readme`, `how_to_recover`). When a marker is found, classify the host into
+one of two states:
+
+- `compromised-wiped` — marker present + `index_count ≤ 2`: operator's
+  data is gone (Meow's typical end state after its delete-all + plant-marker
+  workflow completes).
+- `compromised-marked` — marker present + other indices still alive: the
+  attacker has established control but hasn't (or hasn't yet) wiped. These
+  are the saveable cases — disclosure-urgent, data still recoverable if the
+  operator hardens fast.
+
+Both states get a `critical`-severity finding with category
+`compromised_by_extortion`, a `pipeline_tag` written to `raw_data`, and
+references to the Insight #28 retraction + the 2026-05-17 attribution
+evidence pack.
+
+**CLI:** `--exclude-compromised` drops both `compromised-*` states from
+the final JSON report. Use this when feeding aimap output into a disclosure
+pipeline that frames "your host is exposed" — those hosts need different
+copy. Without the flag, all hosts including compromised ones are reported
+(useful for the discovery/measurement side).
+
+**Smoke test (Tahakum AI host, 92.222.197.175 — known fully-wiped):**
+
+```
+pipeline_tag:     compromised-wiped
+extortion_marker: read_me
+findings:
+  [high]     unauth_data
+  [critical] compromised_by_extortion
+  [high]     rag_vector_store
+```
+
+With `--exclude-compromised`: report contains zero enum_results, matching
+the intended downstream-disclosure-filter behavior.
+
+### Why this matters
+
+The 2026-05-17 disclosure batch caught the bad framing manually before
+sending — but only because of the yesterday-vs-today re-probe. Future
+surveys won't have that retroactive correction step; the classifier needs
+to live in aimap, not in a survey-end checklist. 92.4% of yesterday's
+surveyed-unauth ES hosts matched at least one of the two compromised
+states; without this filter the disclosure pipeline would (silently)
+produce ~4,400 wrongly-framed letters per survey at population scale.
+
 ## [v1.9.8] - 2026-05-17
 
 ### Added: Elasticsearch / OpenSearch fingerprint + deep enumerator

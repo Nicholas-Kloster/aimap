@@ -24,6 +24,9 @@ func main() {
 	scanAll := flag.Bool("scan-all-fingerprints", false,
 		"Probe every fingerprint against every open port (bypasses DefaultPorts filter). "+
 			"Use when services may be on non-canonical ports; trades ~30x more requests for thorough coverage.")
+	excludeCompromised := flag.Bool("exclude-compromised", false,
+		"Drop hosts marked compromised-by-extortion (e.g. Meow-class wiped Elasticsearch with read_me index) from the JSON report. "+
+			"Use for disclosure-pipeline input — you don't want to send 'your host is exposed' to a host that's already been wiped.")
 	flag.Parse()
 
 	scanAllFingerprints = *scanAll
@@ -155,6 +158,28 @@ func main() {
 	printPhase(3, "DEEP ENUMERATION")
 
 	enumResults := runEnumerators(services, *timeout, *verbose, *threads)
+
+	// ── Extortion filter (v1.9.9) ────────────────────────────────
+	// --exclude-compromised drops hosts that aimap classified as
+	// compromised-by-extortion (Meow / Indexrm-class read_me marker).
+	// These are NOT valid "your-host-is-exposed" disclosure targets —
+	// they're already-compromised hosts that need a different framing.
+	if *excludeCompromised {
+		var filtered []EnumResult
+		dropped := 0
+		for _, er := range enumResults {
+			tag, _ := er.RawData["pipeline_tag"].(string)
+			if tag == "compromised-wiped" || tag == "compromised-marked" {
+				dropped++
+				continue
+			}
+			filtered = append(filtered, er)
+		}
+		if dropped > 0 {
+			fmt.Printf("\n  [v1.9.9 filter] Excluded %d compromised-by-extortion host(s) from report (use without --exclude-compromised to see them).\n\n", dropped)
+		}
+		enumResults = filtered
+	}
 
 	for _, er := range enumResults {
 		printServiceCard(er)

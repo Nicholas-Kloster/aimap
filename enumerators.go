@@ -3378,6 +3378,79 @@ func enumElasticsearch(c *http.Client, svc ServiceMatch) EnumResult {
 		Detail:   fmt.Sprintf("GET /_cat/indices returned %d indices unauth (X-Pack security disabled or default Docker image).", len(indexNames)),
 	})
 
+	// Extortion-classifier (v1.9.9) — detect Meow / Indexrm-class compromise.
+	// The signature is a small index with the literal name "read_me" (or close
+	// variants like read_me_first, recover_data). When present, the host has
+	// been hit by automated extortion tooling and the attacker has established
+	// control. Findings emitted here drive downstream pipeline filtering —
+	// don't send "your host is exposed" disclosures to hosts that are already
+	// compromised; that's a different conversation.
+	//
+	// Three states:
+	//   1. compromised-wiped       — read_me present + index_count <= 2 (data deleted)
+	//   2. compromised-marked      — read_me present + other indices alive (control established,
+	//                                 not yet wiped — these are the saveable cases)
+	//   3. (no extortion marker)   — proceed with AI-stack probe normally
+	//
+	// 4,411 of 4,776 (92.4%) of 2026-05-16's surveyed-unauth Elasticsearch hosts
+	// matched state 1 or 2 in the 2026-05-17 re-probe (case study:
+	// es-clickhouse-cross-stack-2026-05-17.md). The classifier short-circuits
+	// the _mapping probe on state 1 (no data to characterize) but preserves
+	// it on state 2 (operator's data still alive and worth characterizing).
+	extortionMarkers := []string{"read_me", "read_me_first", "recover_data", "readme", "how_to_recover"}
+	var extortionIndex string
+	for _, name := range indexNames {
+		lower := strings.ToLower(name)
+		for _, marker := range extortionMarkers {
+			if lower == marker || strings.HasPrefix(lower, marker+"_") {
+				extortionIndex = name
+				break
+			}
+		}
+		if extortionIndex != "" {
+			break
+		}
+	}
+	if extortionIndex != "" {
+		wiped := len(indexNames) <= 2
+		r.RawData["extortion_marker"] = extortionIndex
+		r.RawData["extortion_state"] = map[string]bool{"wiped": wiped, "marked": !wiped}
+		state := "compromised-marked"
+		if wiped {
+			state = "compromised-wiped"
+		}
+		// Tag for downstream pipeline filtering: --exclude-compromised drops
+		// these hosts from disclosure batches that frame "your host is exposed."
+		r.RawData["pipeline_tag"] = state
+		var detail string
+		if wiped {
+			detail = fmt.Sprintf(
+				"Host has the extortion marker index '%s' and only %d indices total — Meow / Indexrm-class wipe complete. Operator's data has been deleted. Disclosure framing should NOT say 'your host is exposed' (host is already compromised); say 'you've been hit by automated extortion, here's actor attribution + recovery posture.'",
+				extortionIndex, len(indexNames),
+			)
+		} else {
+			detail = fmt.Sprintf(
+				"Host has the extortion marker index '%s' alongside %d other indices — Meow / Indexrm-class attacker has established control marker but data is still alive. Saveable case; disclosure-urgent. Don't pay (Meow does not exfiltrate, only deletes).",
+				extortionIndex, len(indexNames)-1,
+			)
+		}
+		r.Findings = append(r.Findings, Finding{
+			Category: "compromised_by_extortion",
+			Title:    "Elasticsearch compromised by automated extortion (Meow / Indexrm family)",
+			Severity: "critical",
+			Detail:   detail,
+			Data: map[string]interface{}{
+				"marker_index": extortionIndex,
+				"state":        state,
+				"index_count":  len(indexNames),
+				"references": []string{
+					"https://github.com/Nicholas-Kloster/AI-LLM-Infrastructure-OSINT/blob/main/evidence/2026-05-17-meow-attribution/ransom-note-and-paste.md",
+					"https://github.com/Nicholas-Kloster/AI-LLM-Infrastructure-OSINT/blob/main/methodology/insight-28-survey-shelf-life-exposure-to-extortion.md",
+				},
+			},
+		})
+	}
+
 	// _mapping deep probe — cap at esMappingProbeCap indices to bound probe
 	// cost. Probe order: indices with names matching vector-field hints
 	// first (most likely AI-stack), then a sample of the rest.
