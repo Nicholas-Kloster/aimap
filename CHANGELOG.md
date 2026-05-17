@@ -2,6 +2,25 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.11] - 2026-05-17
+
+### Added: One API + NewAPI fingerprints (Survey #21)
+
+LLM-gateway survey identified two heavily-populated open-source proxy
+products that aimap did not previously fingerprint:
+
+- **One API** (songquanpeng/one-api) — 202 unique instances. Discriminator:
+  GET /api/status returns deployment config without authentication,
+  including version, auth-provider flags, and email-verification state.
+- **NewAPI** (Calcium-Ion/new-api) — 22 unique instances. Fork of One API
+  with NewAPI-specific fields (HeaderNavModules, api_info array). Same
+  /api/status discriminator pattern.
+
+Severity: critical. These gateways hold the operator's upstream API
+keys (OpenAI, Anthropic, DeepSeek), the user-account list with
+quotas, and the full prompt-and-response log. Default admin
+credentials in the upstream repository are `root` / `123456`.
+
 ## [v1.9.10] - 2026-05-17
 
 ### Added: actor attribution from the extortion marker doc

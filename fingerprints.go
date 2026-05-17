@@ -715,6 +715,74 @@ var Fingerprints = []Fingerprint{
 		Severity: "high",
 	},
 	{
+		// WandB self-hosted UI (Weights & Biases). The SPA returns a React
+		// bundle with WandB-specific anti-flicker snippet and the canonical
+		// title. Field-validated 2026-05-17 against 28-host Shodan corpus.
+		Name:         "Weights & Biases",
+		DefaultPorts: []int{8080, 8081, 80, 443, 28080, 8888},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "weights & biases"},
+				{Type: "body_contains", Value: "<title"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		// "WandB Service" — the FastAPI custom-proxy pattern. Field-validated
+		// 2026-05-17 against vanijmcp.adya.ai:5005. The service description
+		// string and FastAPI's /openapi.json title are the unambiguous anchors.
+		// Operator's WandB API key is embedded in the service and proxied to
+		// any unauth client. Different finding class from the SPA UI: this
+		// exposes the operator's entire WandB workspace, not just the UI.
+		Name:         "WandB Service (custom FastAPI proxy)",
+		DefaultPorts: []int{5005, 5000, 8000, 5001},
+		Probes: []Probe{
+			{Path: "/openapi.json", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "info"},
+				{Type: "body_contains", Value: "wandb service"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "service"},
+				{Type: "body_contains", Value: "wandb"},
+				{Type: "body_contains", Value: "endpoints"},
+			}},
+		},
+		Severity: "critical",
+	},
+	{
+		// ClearML — open-source MLOps platform. Self-hosted UI ships the
+		// "Sign up/login to ClearML" title and product copy. Field-validated
+		// 2026-05-17 against 95-host Shodan corpus.
+		Name:         "ClearML",
+		DefaultPorts: []int{8080, 8008, 8081, 8085, 80, 443},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "clearml"},
+				{Type: "body_contains", Value: "<title"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
+		// Aim — open-source experiment tracker. Less-populous category (2
+		// confirmed Shodan hits 2026-05-17), but the html:aim-ui dork is
+		// reliable. The SPA ships /static/* paths and an `aim-ui` body tag.
+		Name:         "Aim",
+		DefaultPorts: []int{43800, 80, 443},
+		Probes: []Probe{
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "aim-ui"},
+			}},
+		},
+		Severity: "medium",
+	},
+	{
 		Name:         "TensorFlow Serving",
 		DefaultPorts: []int{8501},
 		Probes: []Probe{
@@ -856,6 +924,58 @@ var Fingerprints = []Fingerprint{
 			}},
 		},
 		Severity: "medium",
+	},
+	{
+		// One API (songquanpeng/one-api) — popular open-source LLM gateway.
+		// Self-hosted in Chinese-region operator stacks for brokering OpenAI/
+		// Anthropic/DeepSeek paid keys to downstream users. Default port 3000.
+		// Discriminator: GET /api/status returns the deployment-config JSON
+		// without authentication, including auth-provider flags (oidc, github,
+		// lark, email_verification). Field-validated 2026-05-17 against
+		// 139.224.251.102:3000 and 45.76.217.104:8200.
+		//
+		// Exposed One API admin = full LLM-billing-quota theft surface. The
+		// dashboard stores every user's API keys, their downstream paid
+		// quota, and prompt-relay logs. Default admin login is `root` /
+		// `123456` on unconfigured deployments.
+		Name:         "One API",
+		DefaultPorts: []int{3000, 80, 443, 8200, 8080, 8000},
+		Probes: []Probe{
+			{Path: "/api/status", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "data"},
+				{Type: "body_contains", Value: "email_verification"},
+				{Type: "body_contains", Value: "display_in_currency"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "<title>one api</title>"},
+			}},
+		},
+		Severity: "critical",
+	},
+	{
+		// NewAPI (Calcium-Ion/new-api) — fork of One API with a fancier UI,
+		// extra brokering providers (Doubao, Tongyi, Moonshot, Kimi), and
+		// gift-code / billing extras. Same /api/status discriminator pattern
+		// as One API but the response carries NewAPI-specific fields:
+		// HeaderNavModules, SidebarModulesAdmin, api_info[]. Field-validated
+		// 2026-05-17 against 47.242.61.197:3000.
+		//
+		// Default port 3000, often co-located with One API behind a Vue/React
+		// SPA. Same threat shape — exposed dashboard = LLM-billing theft +
+		// prompt-history exfil.
+		Name:         "NewAPI",
+		DefaultPorts: []int{3000, 80, 443, 8090, 8080},
+		Probes: []Probe{
+			{Path: "/api/status", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "data"},
+				{Type: "body_contains", Value: "HeaderNavModules"},
+				{Type: "body_contains", Value: "api_info"},
+			}},
+		},
+		Severity: "critical",
 	},
 
 	// ── Notebooks / dev ─────────────────────────────────────────
