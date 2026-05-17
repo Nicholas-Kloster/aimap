@@ -2,6 +2,60 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.8] - 2026-05-17
+
+### Added: Elasticsearch / OpenSearch fingerprint + deep enumerator
+
+Closes the SESSION.md-flagged gap from the 2026-05-16 cross-platform
+ten-survey day: the 5,037 unauth Elasticsearch hosts and 1,832 unauth
+ClickHouse hosts confirmed yesterday were probed via bespoke
+`fast_enum_es.py` / `fast_enum_clickhouse.py` scripts. The
+manual-→-productize-→-re-run loop (per the methodology) is closed here.
+
+**Elasticsearch fingerprint** (Tier-A* — `xpack.security.enabled=false` is
+the default in the official Docker image):
+
+- `GET /` conjunctive on (status 200, version object, cluster_name,
+  cluster_uuid, body contains "lucene_version"). The 4-conjunct anchor
+  also matches OpenSearch (Amazon ES fork) since the API surface is
+  identical for our purposes — both report version objects + cluster
+  identifiers, both expose `_cat/indices` + per-index `_mapping`.
+- New port 9200 added to the default port scan set.
+
+**`enumElasticsearch`** — pulls cluster identity, cluster health, index
+list, and (capped at 30 per host) per-index `_mapping` to detect the
+canonical AI-stack signal: `dense_vector` (ES) / `knn_vector` (OpenSearch)
+/ `sparse_vector` field types. Walks one level of nested-object mappings
+to catch the Spring AI / LangChain Java chunks pattern:
+`chunks_<N>: {nested, properties: {vector_embedding_<N>: knn_vector}}`.
+Captures both ES `dims` and OpenSearch `dimension` schema spellings.
+
+Restraint enforced in code — GET-only, field-type metadata only. No
+`_search`, no `_bulk`, no `_delete_by_query`. Validated on 84.247.189.64
+(operator's DMS — `dms_documentvectors` indexed with knn_vector dim 768).
+
+Ancient-version flag for ES 1.x / 2.x (multiple public unauth RCEs:
+CVE-2014-3120, CVE-2015-1427, CVE-2015-5531).
+
+**`enumClickHouse`** — extends the existing CH fingerprint (which only
+detected presence via X-ClickHouse-* headers) with the SHOW DATABASES +
+SHOW TABLES pass via the HTTP GET query interface (`/?query=...`). Caps
+at 60 databases / 200 tables per host. AI-stack marker detection on DB +
+table names (langfuse, signoz, vllm, ollama, prompt_*, chat_*,
+embedding, vector, etc.).
+
+Restraint — SHOW commands + `system.*` queries are pure metadata. No
+SELECT * on user tables, no INSERT, no system.processes (query-text
+leakage), no system.users (creds). Validated on 101.42.232.108:8123
+(quantitative trading operator — DB `stock` with `backtest_*` tables).
+
+### Why this matters
+
+47 → 49 deep enumerators; ES / OpenSearch was the largest unauth-platform
+class still relying on a bespoke probe. The two new enumerators feed
+straight into the standard aimap pipeline and `visorlog ingest`,
+eliminating the maintenance burden of survey-specific scripts.
+
 ## [v1.9.7] - 2026-05-16
 
 ### Fixed: ComfyUI-Manager presence detection (status≠404 not status==200)

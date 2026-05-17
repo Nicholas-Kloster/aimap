@@ -1584,6 +1584,33 @@ var Fingerprints = []Fingerprint{
 		},
 		Severity: "high",
 	},
+	// Elasticsearch — Tier-A* (auth optional, off-by-default in the official
+	// `elasticsearch:7.x`/`8.x` Docker image — xpack.security.enabled=false
+	// is the deployment default). 5,037 unauth instances confirmed at
+	// population scale 2026-05-16 (case-studies/commercial/
+	// elasticsearch-ai-stack-population-survey-2026-05-16.md). Conjunctive:
+	// version + cluster_name + cluster_uuid is the platform anchor — the
+	// three-key tuple on / is unique to ES/OpenSearch and rules out generic
+	// JSON 200s. enumElasticsearch pulls _mapping field types to distinguish
+	// AI-stack (dense_vector / knn_vector field) from generic doc indices.
+	{
+		Name:         "Elasticsearch",
+		DefaultPorts: []int{9200, 9201, 9202, 9203},
+		Probes: []Probe{
+			// GET / on a healthy ES cluster returns version object +
+			// cluster_name + cluster_uuid. Drops the tagline conjunct so
+			// OpenSearch (Amazon ES fork, version.distribution=opensearch)
+			// also matches — both share the same API surface for our probe.
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "version"},
+				{Type: "json_field", Field: "cluster_name"},
+				{Type: "json_field", Field: "cluster_uuid"},
+				{Type: "body_contains", Value: "lucene_version"},
+			}},
+		},
+		Severity: "high",
+	},
 	{
 		Name:         "Apache Pinot Controller",
 		DefaultPorts: []int{9000},

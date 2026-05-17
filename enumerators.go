@@ -225,6 +225,10 @@ func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool
 			result = enumA1111(client, svc)
 		case "InvokeAI":
 			result = enumInvokeAI(client, svc)
+		case "Elasticsearch":
+			result = enumElasticsearch(client, svc)
+		case "ClickHouse":
+			result = enumClickHouse(client, svc)
 		default:
 			result = mkResult(svc)
 		}
@@ -3268,4 +3272,432 @@ func enumInvokeAI(c *http.Client, svc ServiceMatch) EnumResult {
 		}
 	}
 	return r
+}
+
+// ── Elasticsearch (v1.9.8) ──────────────────────────────────────────
+//
+// Tier-A* — Docker image ships with xpack.security.enabled=false. 5,037
+// unauth instances confirmed at population scale 2026-05-16.
+//
+// Deep probe extends yesterday's fast_enum_es.py (which captured cluster_name +
+// top-20 index names) with the missing `_mapping` field-type pass: the
+// canonical AI-stack signal is a `dense_vector` field type in any index. That
+// promotes a host from "unauth Elasticsearch" to "unauth Elasticsearch backing
+// a RAG/vector workload" regardless of whether the index name contains an
+// AI-stack token. The case study's 5,025 "generic name, likely AI-stack"
+// hosts are exactly what this enumerator surfaces.
+//
+// Restraint: GET-only. Pulls cluster identity (/), cluster health
+// (/_cluster/health), index list (/_cat/indices), and per-index `_mapping`
+// for up to esMappingProbeCap indices. **No _search, no document reads, no
+// /_bulk, no /_delete_by_query.** Field-type metadata is the finding;
+// document contents are out of scope per the restraint ethic.
+const (
+	esMappingProbeCap     = 30 // cap _mapping probes per host to avoid abuse
+	esVectorFieldNameHint = "embedding,vector,vec_,embed_"
+)
+
+func enumElasticsearch(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+
+	// GET / — cluster identity + version anchor
+	if st, _, body, err := httpGET(c, b+"/"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			if ver, ok := m["version"].(map[string]interface{}); ok {
+				r.Version = jStr(ver, "number")
+				r.RawData["lucene_version"] = jStr(ver, "lucene_version")
+			}
+			r.RawData["cluster_name"] = jStr(m, "cluster_name")
+			r.RawData["tagline"] = jStr(m, "tagline")
+			r.Details = append(r.Details, fmt.Sprintf(
+				"Elasticsearch %s · cluster=%s",
+				r.Version, jStr(m, "cluster_name"),
+			))
+		}
+	}
+
+	// GET /_cluster/health — Insight #16 "data layer over status code".
+	// Health is sometimes still open when /_cat/indices is auth-gated; that
+	// asymmetry itself is the finding (effective-unauth via cluster_health).
+	if st, _, body, err := httpGET(c, b+"/_cluster/health"); err == nil && st == 200 {
+		if m, err := parseJSON(body); err == nil {
+			r.RawData["cluster_health"] = m
+			r.Details = append(r.Details, fmt.Sprintf(
+				"health=%s · nodes=%v · indices=%v",
+				jStr(m, "status"),
+				m["number_of_nodes"], m["active_primary_shards"],
+			))
+		}
+	}
+
+	// GET /_cat/indices — index list. Auth-state classification anchored here.
+	st, _, body, err := httpGET(c, b+"/_cat/indices?format=json&s=index")
+	if err != nil {
+		return r
+	}
+	if st == 401 || st == 403 {
+		r.AuthStatus = "auth-gated"
+		return r
+	}
+	if st != 200 {
+		r.AuthStatus = "partial-open" // / was 200 but /_cat/indices wasn't
+		return r
+	}
+
+	indices, err := parseJSONArray(body)
+	if err != nil {
+		return r
+	}
+	r.AuthStatus = "none"
+
+	// Collect index names (skip system .* indices)
+	indexNames := make([]string, 0, len(indices))
+	for _, raw := range indices {
+		idx, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name := jStr(idx, "index")
+		if name == "" || strings.HasPrefix(name, ".") {
+			continue
+		}
+		indexNames = append(indexNames, name)
+	}
+	r.RawData["index_count"] = len(indexNames)
+	if len(indexNames) > 20 {
+		r.RawData["indices_sample"] = indexNames[:20]
+	} else {
+		r.RawData["indices_sample"] = indexNames
+	}
+
+	r.Findings = append(r.Findings, Finding{
+		Category: "unauth_data",
+		Title:    "Elasticsearch index list reachable without authentication",
+		Severity: "high",
+		Detail:   fmt.Sprintf("GET /_cat/indices returned %d indices unauth (X-Pack security disabled or default Docker image).", len(indexNames)),
+	})
+
+	// _mapping deep probe — cap at esMappingProbeCap indices to bound probe
+	// cost. Probe order: indices with names matching vector-field hints
+	// first (most likely AI-stack), then a sample of the rest.
+	hintIdx := make([]string, 0)
+	otherIdx := make([]string, 0)
+	hints := strings.Split(esVectorFieldNameHint, ",")
+	for _, name := range indexNames {
+		lower := strings.ToLower(name)
+		matched := false
+		for _, h := range hints {
+			if h != "" && strings.Contains(lower, h) {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			hintIdx = append(hintIdx, name)
+		} else {
+			otherIdx = append(otherIdx, name)
+		}
+	}
+	probeOrder := append(hintIdx, otherIdx...)
+	if len(probeOrder) > esMappingProbeCap {
+		probeOrder = probeOrder[:esMappingProbeCap]
+	}
+
+	aiStackIndices := make([]map[string]interface{}, 0)
+	for _, idx := range probeOrder {
+		st2, _, body2, err2 := httpGET(c, b+"/"+idx+"/_mapping")
+		if err2 != nil || st2 != 200 {
+			continue
+		}
+		m2, err2 := parseJSON(body2)
+		if err2 != nil {
+			continue
+		}
+		// Mapping shape: { "<index>": { "mappings": { "properties": { "<field>": {"type":"dense_vector","dims":N}, ... } } } }
+		idxMap, ok := m2[idx].(map[string]interface{})
+		if !ok {
+			// ES 7.x older-style: properties one level deeper
+			for _, v := range m2 {
+				if im, ok := v.(map[string]interface{}); ok {
+					idxMap = im
+					break
+				}
+			}
+		}
+		mappings, _ := idxMap["mappings"].(map[string]interface{})
+		props, _ := mappings["properties"].(map[string]interface{})
+		if props == nil {
+			continue
+		}
+		vectorFields := make([]map[string]interface{}, 0)
+		// Walk top-level properties AND one level of nested objects — chunk
+		// schemas (Spring AI, LangChain Java) commonly use `chunks_<dim>:
+		// {type: nested, properties: {vector_embedding_<dim>: {knn_vector}}}`.
+		// Without this, a host like 84.247.189.64 (OpenSearch with chunks
+		// pattern) reports zero vector fields despite being clearly RAG.
+		walkProps := func(propMap map[string]interface{}, pathPrefix string) {
+			for fname, fdef := range propMap {
+				fmap, ok := fdef.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				ftype := jStr(fmap, "type")
+				if ftype == "dense_vector" || ftype == "knn_vector" || ftype == "sparse_vector" {
+					// ES uses "dims", OpenSearch uses "dimension". Capture either.
+					dims := fmap["dims"]
+					if dims == nil {
+						dims = fmap["dimension"]
+					}
+					vectorFields = append(vectorFields, map[string]interface{}{
+						"field":      pathPrefix + fname,
+						"type":       ftype,
+						"dims":       dims,
+						"similarity": fmap["similarity"],
+					})
+				}
+			}
+		}
+		walkProps(props, "")
+		for fname, fdef := range props {
+			fmap, ok := fdef.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			ftype := jStr(fmap, "type")
+			if ftype != "nested" && ftype != "object" {
+				continue
+			}
+			inner, _ := fmap["properties"].(map[string]interface{})
+			if inner != nil {
+				walkProps(inner, fname+".")
+			}
+		}
+		if len(vectorFields) > 0 {
+			aiStackIndices = append(aiStackIndices, map[string]interface{}{
+				"index":          idx,
+				"vector_fields":  vectorFields,
+			})
+		}
+	}
+	if len(aiStackIndices) > 0 {
+		r.RawData["ai_stack_indices"] = aiStackIndices
+		r.Details = append(r.Details, fmt.Sprintf(
+			"AI-stack signal: %d index(es) with dense_vector/knn_vector field types",
+			len(aiStackIndices),
+		))
+		r.Findings = append(r.Findings, Finding{
+			Category: "rag_vector_store",
+			Title:    "Elasticsearch backs RAG / vector workload (dense_vector field detected)",
+			Severity: "high",
+			Detail: fmt.Sprintf(
+				"%d index(es) declare vector field types — operator is running a RAG or vector-search pipeline on this cluster.",
+				len(aiStackIndices),
+			),
+			Data: aiStackIndices,
+		})
+	}
+
+	// Ancient-RCE flag — ES <= 2.x has multiple unauth groovy/MVEL RCEs
+	// (CVE-2014-3120, CVE-2015-1427, CVE-2015-5531). Insight #21:
+	// "ES 2.9.0 hosts are exposed to multiple unauthenticated RCEs."
+	if strings.HasPrefix(r.Version, "1.") || strings.HasPrefix(r.Version, "2.") {
+		r.Findings = append(r.Findings, Finding{
+			Category: "rce_candidate",
+			Title:    "Elasticsearch " + r.Version + " — ancient (pre-X-Pack) with public unauth RCEs",
+			Severity: "critical",
+			Detail:   "ES 1.x/2.x have multiple unauthenticated RCEs in default config (CVE-2014-3120 Groovy, CVE-2015-1427 sandbox-escape, CVE-2015-5531 path-traversal). Confirm exploitability per host before disclosure framing.",
+		})
+	}
+
+	return r
+}
+
+// ── ClickHouse (v1.9.8) ─────────────────────────────────────────────
+//
+// Tier-A* — Docker image's default `default` user has no password. 1,832
+// unauth instances confirmed at population scale 2026-05-16.
+//
+// Deep probe pulls SHOW DATABASES + SHOW TABLES via the HTTP GET query
+// interface (ClickHouse supports query in URL ?query=... for SELECT and
+// SHOW commands — no POST body needed). The DB + table names disclose the
+// operator's app schema; `system.*` tables provide cluster topology.
+//
+// Restraint: SHOW commands + `system.*` queries are pure metadata. No
+// SELECT * on user tables, no INSERT, no ALTER, no system.processes
+// (which can leak query text including secrets), no system.users (creds).
+const (
+	chMaxDatabases = 60
+	chMaxTables    = 200
+)
+
+func enumClickHouse(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	b := svc.BaseURL
+
+	// /ping is the platform-identity anchor. The X-ClickHouse-* headers
+	// from the fingerprint already proved this is ClickHouse; we use this
+	// to capture the Server-Display-Name banner.
+	if _, hdr, _, err := httpGET(c, b+"/ping"); err == nil {
+		if name := hdr["X-Clickhouse-Server-Display-Name"]; name != "" {
+			r.RawData["server_display_name"] = name
+		}
+	}
+
+	// version() — single-row scalar
+	if st, _, body, err := httpGET(c, b+"/?query="+urlQuery("SELECT version()")); err == nil && st == 200 {
+		r.Version = strings.TrimSpace(string(body))
+		r.Details = append(r.Details, "ClickHouse "+r.Version)
+	}
+
+	// SHOW DATABASES — JSONEachRow gives newline-separated {"name":"..."} rows
+	st, _, body, err := httpGET(c, b+"/?query="+urlQuery("SHOW DATABASES FORMAT JSONEachRow"))
+	if err != nil || st != 200 {
+		if st == 401 || st == 403 {
+			r.AuthStatus = "auth-gated"
+		}
+		return r
+	}
+	r.AuthStatus = "none"
+
+	dbNames := parseJSONEachRowNames(body, "name")
+	r.RawData["database_count"] = len(dbNames)
+	if len(dbNames) > 20 {
+		r.RawData["databases_sample"] = dbNames[:20]
+	} else {
+		r.RawData["databases_sample"] = dbNames
+	}
+
+	if len(dbNames) > 0 {
+		r.Findings = append(r.Findings, Finding{
+			Category: "unauth_data",
+			Title:    "ClickHouse database list reachable without authentication",
+			Severity: "high",
+			Detail: fmt.Sprintf(
+				"GET /?query=SHOW DATABASES returned %d databases unauth (default `default` user has no password in the standard Docker image).",
+				len(dbNames),
+			),
+		})
+	}
+
+	// Skip system DBs; sample user DBs for SHOW TABLES
+	sysDBs := map[string]bool{
+		"system": true, "INFORMATION_SCHEMA": true,
+		"information_schema": true, "default": false, // include default — operator usually uses it
+	}
+	type dbTable struct {
+		Database string   `json:"database"`
+		Tables   []string `json:"tables"`
+	}
+	dbTables := make([]dbTable, 0)
+	tablesSeen := 0
+	for _, db := range dbNames {
+		if sysDBs[db] && db != "default" {
+			continue
+		}
+		if tablesSeen >= chMaxTables || len(dbTables) >= chMaxDatabases {
+			break
+		}
+		q := fmt.Sprintf("SHOW TABLES FROM `%s` FORMAT JSONEachRow", strings.ReplaceAll(db, "`", ""))
+		st2, _, body2, err2 := httpGET(c, b+"/?query="+urlQuery(q))
+		if err2 != nil || st2 != 200 {
+			continue
+		}
+		tbls := parseJSONEachRowNames(body2, "name")
+		// trim long table lists
+		shown := tbls
+		if len(shown) > 25 {
+			shown = shown[:25]
+		}
+		dbTables = append(dbTables, dbTable{Database: db, Tables: shown})
+		tablesSeen += len(shown)
+	}
+	if len(dbTables) > 0 {
+		r.RawData["db_tables"] = dbTables
+		r.Details = append(r.Details, fmt.Sprintf(
+			"%d database(s) enumerated; %d table(s) total in sample",
+			len(dbTables), tablesSeen,
+		))
+	}
+
+	// AI-stack signal: DB / table names suggesting AI workloads.
+	aiMarkers := []string{
+		"langfuse", "phoenix", "helicone", "signoz", "posthog",
+		"vector", "embedding", "rag_", "rag-", "llm",
+		"vllm", "ollama", "openai", "anthropic",
+		"prompt", "chat_", "completion",
+	}
+	aiHits := make([]string, 0)
+	for _, dt := range dbTables {
+		lower := strings.ToLower(dt.Database)
+		for _, m := range aiMarkers {
+			if strings.Contains(lower, m) {
+				aiHits = append(aiHits, "db:"+dt.Database)
+				break
+			}
+		}
+		for _, t := range dt.Tables {
+			tlower := strings.ToLower(t)
+			for _, m := range aiMarkers {
+				if strings.Contains(tlower, m) {
+					aiHits = append(aiHits, dt.Database+"."+t)
+					break
+				}
+			}
+		}
+	}
+	if len(aiHits) > 0 {
+		r.RawData["ai_stack_hits"] = aiHits
+		r.Findings = append(r.Findings, Finding{
+			Category: "ai_stack_disclosure",
+			Title:    "ClickHouse stores AI-stack workload (LLM observability / RAG / vector)",
+			Severity: "high",
+			Detail: fmt.Sprintf(
+				"DB / table names disclose AI workload: %s",
+				strings.Join(aiHits, ", "),
+			),
+			Data: aiHits,
+		})
+	}
+
+	return r
+}
+
+// ── ClickHouse helpers ──────────────────────────────────────────────
+
+// parseJSONEachRowNames pulls the named string field from a JSONEachRow
+// response body (one JSON object per line). ClickHouse's JSONEachRow is
+// always one row per line; tolerates blank lines + trailing whitespace.
+func parseJSONEachRowNames(body []byte, key string) []string {
+	out := make([]string, 0)
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var m map[string]interface{}
+		if err := json.Unmarshal(line, &m); err != nil {
+			continue
+		}
+		if s, ok := m[key].(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// urlQuery is a minimal URL-encoder for the `?query=` SHOW-statement use
+// case. It encodes spaces and the few characters that break URL parsing;
+// ClickHouse accepts unencoded backticks in the query string.
+func urlQuery(q string) string {
+	repl := strings.NewReplacer(
+		" ", "+",
+		"\n", "+",
+		"\t", "+",
+		"#", "%23",
+		"&", "%26",
+		"?", "%3F",
+		"=", "%3D",
+	)
+	return repl.Replace(q)
 }
