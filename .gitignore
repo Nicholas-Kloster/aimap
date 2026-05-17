@@ -1,3 +1,4 @@
 aimap
 *.json
 dist/
+*.db

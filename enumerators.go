@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -3292,10 +3293,88 @@ func enumInvokeAI(c *http.Client, svc ServiceMatch) EnumResult {
 // for up to esMappingProbeCap indices. **No _search, no document reads, no
 // /_bulk, no /_delete_by_query.** Field-type metadata is the finding;
 // document contents are out of scope per the restraint ethic.
+//
+// **Exception (v1.9.10):** the extortion-marker index is the *attacker's*
+// document, not the operator's data. When the marker is present we read one
+// document from it to extract actor identifiers (wallet, email, paste URL).
+// This characterizes the attacker, not the victim, and is consistent with
+// the restraint ethic. Capped at 64 KB and one document.
 const (
 	esMappingProbeCap     = 30 // cap _mapping probes per host to avoid abuse
 	esVectorFieldNameHint = "embedding,vector,vec_,embed_"
 )
+
+// Actor-attribution patterns (v1.9.10). Drawn from the 2026-05-17 150-host
+// campaign-scope probe (case study: meow-multi-actor-campaign-scope-2026-05-17.md).
+// Three actors share the read_me marker but use distinct contact/wallet schemas:
+//   Actor A (Meow / wendy.etabw) — bc1q38rjul6gdamfflf6p4ukz0ymtvfgfv2j9saf6r +
+//     wendy.etabw@gmx.com, paste URL tli.sh/73x1k (decrypts to follow-up note)
+//   Actor B (sharebot)            — db-recovery@sharebot.net
+//   Actor C (onionmail)           — scandal@onionmail.org
+var (
+	extortionBtcRe   = regexp.MustCompile(`bc1[0-9a-z]{20,80}|[13][a-km-zA-HJ-NP-Z1-9]{25,34}`)
+	extortionEmailRe = regexp.MustCompile(`[a-zA-Z0-9._+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
+	extortionPasteRe = regexp.MustCompile(`(?:tli\.sh|paste\.sh|pastebin\.com|privatebin\.[a-z.]+)/[A-Za-z0-9_/\-#?=]+`)
+	extortionOnionRe = regexp.MustCompile(`[a-z2-7]{56}\.onion|[a-z2-7]{16}\.onion`)
+	extortionXmrRe   = regexp.MustCompile(`4[0-9AB][1-9A-HJ-NP-Za-km-z]{93}`)
+)
+
+// extractExtortionAttribution reads ONE document from the marker index and
+// pulls out actor identifiers. Returns nil on any error or 0-hit response.
+// Single GET, 64 KB cap.
+func extractExtortionAttribution(c *http.Client, baseURL, marker string) map[string]interface{} {
+	st, _, body, err := httpGET(c, baseURL+"/"+marker+"/_search?size=1")
+	if err != nil || st != 200 {
+		return nil
+	}
+	if len(body) > 64*1024 {
+		body = body[:64*1024]
+	}
+	text := strings.ReplaceAll(string(body), "\n", " ")
+
+	attrs := map[string]interface{}{}
+	if m := extortionBtcRe.FindString(text); m != "" {
+		attrs["btc_wallet"] = m
+	}
+	if m := extortionXmrRe.FindString(text); m != "" {
+		attrs["xmr_wallet"] = m
+	}
+	emails := extortionEmailRe.FindAllString(text, -1)
+	if len(emails) > 0 {
+		seen := map[string]bool{}
+		uniq := make([]string, 0, len(emails))
+		for _, e := range emails {
+			el := strings.ToLower(e)
+			if !seen[el] {
+				seen[el] = true
+				uniq = append(uniq, e)
+			}
+		}
+		attrs["contact_emails"] = uniq
+	}
+	if m := extortionPasteRe.FindString(text); m != "" {
+		attrs["paste_url"] = m
+	}
+	if m := extortionOnionRe.FindString(text); m != "" {
+		attrs["onion_url"] = m
+	}
+
+	// Actor classification — drawn from the 150-host campaign-scope analysis.
+	actor := "unknown"
+	lower := strings.ToLower(text)
+	switch {
+	case strings.Contains(lower, "wendy.etabw") ||
+		strings.Contains(lower, "bc1q38rjul6gdamfflf6p4ukz0ymtvfgfv2j9saf6r") ||
+		strings.Contains(lower, "tli.sh/73x1k"):
+		actor = "Meow-Actor-A (wendy.etabw / tli.sh)"
+	case strings.Contains(lower, "db-recovery@sharebot.net"):
+		actor = "Meow-Actor-B (db-recovery@sharebot)"
+	case strings.Contains(lower, "scandal@onionmail.org"):
+		actor = "Meow-Actor-C (scandal@onionmail)"
+	}
+	attrs["actor_class"] = actor
+	return attrs
+}
 
 func enumElasticsearch(c *http.Client, svc ServiceMatch) EnumResult {
 	r := mkResult(svc)
@@ -3351,8 +3430,11 @@ func enumElasticsearch(c *http.Client, svc ServiceMatch) EnumResult {
 	}
 	r.AuthStatus = "none"
 
-	// Collect index names (skip system .* indices)
+	// Collect index names (skip system .* indices). Also track per-index doc
+	// counts so the wiped/marked classifier can look at actual data, not
+	// just index cardinality.
 	indexNames := make([]string, 0, len(indices))
+	indexDocCounts := make(map[string]int64, len(indices))
 	for _, raw := range indices {
 		idx, ok := raw.(map[string]interface{})
 		if !ok {
@@ -3363,6 +3445,16 @@ func enumElasticsearch(c *http.Client, svc ServiceMatch) EnumResult {
 			continue
 		}
 		indexNames = append(indexNames, name)
+		// docs.count can come back as either string or number depending on
+		// format=json convention; cover both.
+		switch v := idx["docs.count"].(type) {
+		case string:
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+				indexDocCounts[name] = n
+			}
+		case float64:
+			indexDocCounts[name] = int64(v)
+		}
 	}
 	r.RawData["index_count"] = len(indexNames)
 	if len(indexNames) > 20 {
@@ -3412,9 +3504,21 @@ func enumElasticsearch(c *http.Client, svc ServiceMatch) EnumResult {
 		}
 	}
 	if extortionIndex != "" {
-		wiped := len(indexNames) <= 2
+		// Wiped state: marker present AND every non-marker non-system index
+		// has zero docs. Cardinality alone is misleading — the Russian host
+		// 81.94.155.178 has only [read_me, russian_news] yet russian_news
+		// carries 286,385 alive docs. Look at the data, not the index count.
+		nonMarkerAliveDocs := int64(0)
+		for name, n := range indexDocCounts {
+			if name == extortionIndex {
+				continue
+			}
+			nonMarkerAliveDocs += n
+		}
+		wiped := nonMarkerAliveDocs == 0
 		r.RawData["extortion_marker"] = extortionIndex
 		r.RawData["extortion_state"] = map[string]bool{"wiped": wiped, "marked": !wiped}
+		r.RawData["non_marker_alive_docs"] = nonMarkerAliveDocs
 		state := "compromised-marked"
 		if wiped {
 			state = "compromised-wiped"
@@ -3422,32 +3526,65 @@ func enumElasticsearch(c *http.Client, svc ServiceMatch) EnumResult {
 		// Tag for downstream pipeline filtering: --exclude-compromised drops
 		// these hosts from disclosure batches that frame "your host is exposed."
 		r.RawData["pipeline_tag"] = state
+
+		// v1.9.10 — actor attribution. Read one document from the marker index
+		// (the attacker's ransom note) and parse it for wallet/email/paste URL.
+		// This is the attacker's planted content, not operator data.
+		attrs := extractExtortionAttribution(c, b, extortionIndex)
+		actorClass := "unknown"
+		if attrs != nil {
+			r.RawData["extortion_attribution"] = attrs
+			if v, ok := attrs["actor_class"].(string); ok {
+				actorClass = v
+			}
+		}
+
 		var detail string
 		if wiped {
 			detail = fmt.Sprintf(
-				"Host has the extortion marker index '%s' and only %d indices total — Meow / Indexrm-class wipe complete. Operator's data has been deleted. Disclosure framing should NOT say 'your host is exposed' (host is already compromised); say 'you've been hit by automated extortion, here's actor attribution + recovery posture.'",
-				extortionIndex, len(indexNames),
+				"Host has the extortion marker index '%s' and only %d indices total — Meow / Indexrm-class wipe complete. Operator's data has been deleted. Disclosure framing should NOT say 'your host is exposed' (host is already compromised); say 'you've been hit by automated extortion, here's actor attribution + recovery posture.' Attributed actor: %s.",
+				extortionIndex, len(indexNames), actorClass,
 			)
 		} else {
 			detail = fmt.Sprintf(
-				"Host has the extortion marker index '%s' alongside %d other indices — Meow / Indexrm-class attacker has established control marker but data is still alive. Saveable case; disclosure-urgent. Don't pay (Meow does not exfiltrate, only deletes).",
-				extortionIndex, len(indexNames)-1,
+				"Host has the extortion marker index '%s' alongside %d other indices — Meow / Indexrm-class attacker has established control marker but data is still alive. Saveable case; disclosure-urgent. Don't pay (Meow does not exfiltrate, only deletes). Attributed actor: %s.",
+				extortionIndex, len(indexNames)-1, actorClass,
 			)
+		}
+		findingData := map[string]interface{}{
+			"marker_index": extortionIndex,
+			"state":        state,
+			"index_count":  len(indexNames),
+			"actor_class":  actorClass,
+			"references": []string{
+				"https://github.com/Nicholas-Kloster/AI-LLM-Infrastructure-OSINT/blob/main/case-studies/commercial/meow-multi-actor-campaign-scope-2026-05-17.md",
+				"https://github.com/Nicholas-Kloster/AI-LLM-Infrastructure-OSINT/blob/main/evidence/2026-05-17-meow-attribution/ransom-note-and-paste.md",
+				"https://github.com/Nicholas-Kloster/AI-LLM-Infrastructure-OSINT/blob/main/methodology/insight-29-overwhelming-prior-state-look-at-deltas-not-snapshots.md",
+			},
+		}
+		if attrs != nil {
+			if w, ok := attrs["btc_wallet"].(string); ok {
+				findingData["btc_wallet"] = w
+			}
+			if w, ok := attrs["xmr_wallet"].(string); ok {
+				findingData["xmr_wallet"] = w
+			}
+			if e, ok := attrs["contact_emails"].([]string); ok && len(e) > 0 {
+				findingData["contact_emails"] = e
+			}
+			if p, ok := attrs["paste_url"].(string); ok {
+				findingData["paste_url"] = p
+			}
+			if o, ok := attrs["onion_url"].(string); ok {
+				findingData["onion_url"] = o
+			}
 		}
 		r.Findings = append(r.Findings, Finding{
 			Category: "compromised_by_extortion",
 			Title:    "Elasticsearch compromised by automated extortion (Meow / Indexrm family)",
 			Severity: "critical",
 			Detail:   detail,
-			Data: map[string]interface{}{
-				"marker_index": extortionIndex,
-				"state":        state,
-				"index_count":  len(indexNames),
-				"references": []string{
-					"https://github.com/Nicholas-Kloster/AI-LLM-Infrastructure-OSINT/blob/main/evidence/2026-05-17-meow-attribution/ransom-note-and-paste.md",
-					"https://github.com/Nicholas-Kloster/AI-LLM-Infrastructure-OSINT/blob/main/methodology/insight-28-survey-shelf-life-exposure-to-extortion.md",
-				},
-			},
+			Data:     findingData,
 		})
 	}
 

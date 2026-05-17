@@ -2,6 +2,70 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.10] - 2026-05-17
+
+### Added: actor attribution from the extortion marker doc
+
+v1.9.9 detected the `read_me` marker but did not characterize the attacker.
+v1.9.10 reads one document from the marker index (the attacker's planted
+ransom note, not operator data) and parses it for actor identifiers.
+
+**What gets extracted:**
+
+- Bitcoin wallet address (`bc1q...` SegWit / `1...`/`3...` P2PKH-P2SH)
+- Monero wallet address (95-char base58)
+- Contact email addresses (deduplicated, order-preserved)
+- Paste URL (tli.sh, paste.sh, pastebin.com, privatebin)
+- Onion v3 / v2 service URL
+
+**Actor classification:**
+
+Three actors share the `read_me` marker schema but use distinct contact
+channels (from the 2026-05-17 150-host campaign-scope analysis):
+
+- **Actor A** (Meow / wendy.etabw): wallet `bc1q38rjul6gdamfflf6p4ukz0ymtvfgfv2j9saf6r`, email `wendy.etabw@gmx.com`, paste `tli.sh/73x1k`
+- **Actor B** (sharebot): email `db-recovery@sharebot.net`
+- **Actor C** (onionmail): email `scandal@onionmail.org`
+
+The classifier matches on whichever identifier hits first.
+
+**Where it lands in the output:**
+
+- `raw_data.extortion_attribution` — full attribution map (`actor_class`, `btc_wallet`, `xmr_wallet`, `contact_emails[]`, `paste_url`, `onion_url`)
+- `findings[].data` (category `compromised_by_extortion`) — same fields surfaced on the finding object for downstream pipeline consumption
+- `findings[].detail` text — appended `Attributed actor: <class>` line
+
+**Restraint:** single `GET /<marker>/_search?size=1` request, 64 KB response cap. The marker is the attacker's planted content; reading it characterizes the attacker, not the victim, and is consistent with the restraint ethic.
+
+**Smoke test (tahakum.ai, 92.222.197.175 — fully wiped, Meow Actor A):**
+
+```
+pipeline_tag:        compromised-wiped
+extortion_marker:    read_me
+extortion_attribution:
+  actor_class:       Meow-Actor-A (wendy.etabw / tli.sh)
+  btc_wallet:        bc1q38rjul6gdamfflf6p4ukz0ymtvfgfv2j9saf6r
+  contact_emails:    [wendy.etabw@gmx.com]
+  paste_url:         tli.sh/73x1k
+```
+
+The attribution feeds downstream disclosure batching: per-actor language
+("the wendy.etabw / Meow-A operator wipes after marker" vs "scandal@onionmail's
+B-line clone schema"), per-wallet aggregate reporting to ransomwhe.re /
+ID-Ransomware, and population-scale comparative campaign tracking.
+
+### Fixed: wipe-state heuristic looks at doc counts, not cardinality
+
+v1.9.9 declared `compromised-wiped` whenever the index count was ≤2. That
+misclassified hosts where the operator's data sits in a single large index
+alongside the marker — the Russian AI cloud at 81.94.155.178 carried only
+`read_me` + `russian_news`, yet `russian_news` had 286,385 alive docs (6.6
+GB). v1.9.10 collects `docs.count` per non-system index from `_cat/indices`
+and declares wiped only when the sum of non-marker alive docs is zero.
+
+`raw_data.non_marker_alive_docs` is now reported on every host with the
+marker so the classification is auditable.
+
 ## [v1.9.9] - 2026-05-17
 
 ### Added: extortion classifier in `enumElasticsearch` + `--exclude-compromised` CLI flag
