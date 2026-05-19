@@ -2,6 +2,155 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.19] - 2026-05-19
+
+### Fingerprint hardening: Insight #6 anchoring discipline applied to the 24
+### remaining naked body_contains probes (close-out of the v1.9.17 audit gap)
+
+The v1.9.17 internal audit identified 24 fingerprint probes in `fingerprints.go`
+that used a single-condition `body_contains` against a short token, in direct
+violation of the README's load-bearing rule ("naked single-word body_contains
+is unsound at population scale"). v1.9.19 closes all 24.
+
+**Fixed (16 high-FP-risk probes anchored to status + structured signal):**
+
+- **vLLM `/v1/models`**: added `status_code=200` + `json_field=data` — rejects
+  blog/marketing pages mentioning "vllm" that don't return the OpenAI-compat
+  JSON shape.
+- **LiteLLM `/health`**: added `status_code=200` + `json_field=healthy_count`.
+- **LiteLLM `/model/info`**: now requires `body_contains "litellm_params"` (the
+  LiteLLM-specific marker) rather than the bare brand.
+- **Jupyter Notebook `/` fallback**: added `status_code=200` + `<title>` +
+  `Jupyter` — rejects pages that merely mention the brand.
+- **Milvus `/api/v1/health`**: converted `body_contains "is_healthy"` to
+  `json_field=is_healthy` + `status_code=200`. The bare substring would have
+  matched any K8s readiness-probe response.
+- **Langfuse `/` fallback**: added `body_contains "__NEXT_DATA__"` to require
+  the real Langfuse Next.js bundle marker.
+- **Kubeflow `/` fallback**: added `status_code` + `<title>` anchor.
+- **Whisper ASR `/inference`**: anchored to `status_code=400` (the spec-mandated
+  error response when probed without multipart body).
+- **dcm4chee `/dcm4chee-arc/` fallback**: added `status_code=200`.
+- **Clawdbot, Coolify, Dify, OpenHands HTML-title probes**: added
+  `status_code=200` to all four. The title tag was already a structured
+  signal; status anchor closes the 500/404-page-with-title FP class.
+
+**Fixed (11 Exposed API Credentials probes, Insight #38 cross-cutting):**
+
+All 11 vendor-prefix probes (`sk-lf-`, `sk-helicone-`, `sk_live_`, `sk_test_`,
+`sk-ant-api03-`, `lsv2_pt_`, `lsv2_sk_`, `sk-or-v1-`, `xoxp-`, plus two
+`LANGFUSE_SECRET_KEY` env-var paths) now anchor on `status_code=200`.
+Credential leaks in the wild come from 200-response surfaces (env-var dumps,
+build logs, JS bundles, debug endpoints). The hard-proof validation still
+happens at the enumerator stage via `scanCredentials` regex extraction +
+format validation per `credentialClass`.
+
+**Fixed (2 MCP Server permissive fallbacks):**
+
+Probes 7 and 9 of the MCP Server fingerprint (the deliberately permissive
+fallbacks at `/mcp` and `/` matching `Mcp-Session-Id`) now also require
+`body_not_contains "<!DOCTYPE html"` — keeps the spec-unique-string recall
+while excluding the HTML doc-page FP class (vendor docs / blog posts that
+mention the spec header name).
+
+**Regression tests.** Added `fingerprints_anchoring_test.go` with 20 named
+test cases: every fix has a TP test (real-shape response still matches) and
+a FP-reject test (the previously-FP-prone response is now rejected). Plus
+`TestExposedCreds_AllPrefixesCovered` — an inventory test that fails if a
+new `credentialClass` is added in `enum_credentials.go` without a matching
+fingerprint probe.
+
+### scanSecrets ported to validation discipline (Insight #38 generalized)
+
+`scanSecrets` previously emitted every match at `Severity: "critical"` regardless
+of evidence. A bare doc-page mention of `POSTGRES_PASSWORD` produced the same
+finding as a real env-var dump with a 40-char value. Insight #38's validation
+ladder is now generalized to `scanSecrets`:
+
+- **secretPattern struct** gains `Value *regexp.Regexp` (extracts the value
+  following the anchor) and `Format *regexp.Regexp` (validates extracted
+  shape) and `BaseSev` (severity when only the anchor is present).
+- **Severity ladder:**
+  - anchor only → `BaseSev` (medium for env-var names, high for credential
+    prefixes, low for very generic anchors like `HUGGING_FACE`)
+  - anchor + value extracted, Format match → `critical`
+  - anchor + value extracted, Format mismatch → `BaseSev` (no downgrade since
+    the value is still suspicious)
+
+`HUGGING_FACE` (a very generic anchor that previously fired critical on any
+doc page) now emits at `low` unless a real `hf_xxx` value is extracted.
+Twelve env-var patterns get format-validated against vendor-documented
+shapes (sk-proj-/sk-ant-/AKIA/AIza/hf_/etc.).
+
+Memory rule satisfied: `feedback_100_percent_verified_tier_labels.md` —
+every tier label requires 100% verified evidence at that tier.
+
+Regression tests added in `scan_secrets_test.go`: anchor-only emits at
+BaseSev; format-validated values escalate to critical; format-mismatch stays
+at BaseSev; the pre-v1.9.19 "false critical regression" case (bare doc-page
+mention of POSTGRES_PASSWORD) now produces no critical finding.
+
+### Registry-pattern dispatcher (replaces 50-arm switch)
+
+`runEnumerators`'s 50-arm switch statement converted to a registry lookup:
+
+```go
+type enumeratorFn func(c *http.Client, svc ServiceMatch) EnumResult
+var enumeratorRegistry = map[string]enumeratorFn{
+    "Weaviate":          enumWeaviate,
+    "Ollama":            enumOllama,
+    "llama.cpp server":  enumLlamaCpp,
+    // ... 50 entries grouped by category
+}
+```
+
+Adding a new enumerator is one-line registration (next to its `enumXxx`
+definition or in the central table); "did you wire it up?" becomes a
+compile-time check rather than a silent "no enumerator ran" miss. No
+behavior change — same 50 enumerators dispatch to the same functions.
+
+### enum_credentials.go: credential-scanning code extracted from enumerators.go
+
+The credential/secret-scanning code (363 lines) moved out of the 4,500-line
+`enumerators.go` into a new `enum_credentials.go`:
+
+- `secretPattern` type + `secretPatterns` table
+- `credentialClass` type + `credentialClasses` table
+- `redactKey`, `scanCredentials`, `scanSecrets`
+- `enumExposedCredentials` (the cross-cutting enumerator that chains both
+  scanners against `/`, `/env`, `/debug/vars`, `/.env`, `/config`, etc.)
+
+This is a partial split of the v1.9.17 refactor item. The full
+enumerators.go category split (per-category files: enum_vector.go,
+enum_llm.go, enum_observability.go, enum_orchestration.go, enum_bi.go,
+enum_safety.go) is queued for a separate refactor commit since each
+remaining file move is mechanical but high-volume.
+
+### GitHub Actions CI
+
+New `.github/workflows/ci.yml`:
+
+- `build-and-test` job: `go build`, `go vet`, `go test -race`, plus a
+  `-version`/`const Version` consistency check that fails the build if the
+  flag's output disagrees with `version.go`.
+- `cross-platform-build` matrix job: builds linux+darwin × amd64+arm64 on
+  every push/PR. Catches `GOOS`/`GOARCH` regressions before they ship.
+
+### PKGBUILD sha256 backfill
+
+`PKGBUILD` `sha256sums` was set to `SKIP` in v1.9.18 because the source
+tarball had not yet been generated by GitHub. v1.9.19 backfills the
+v1.9.18 hash (then sets the v1.9.19 hash to `SKIP` again pending the next
+tag-push). Downstream packagers can verify the v1.9.18 tarball against
+`46c6787bc13554f969a03727908715e58c2c4fc56fcda777d394b2245e5487cb`.
+
+### Source
+
+v1.9.17 internal review. The six follow-up items identified in that review
+all closed in this release. No new fingerprints. No new enumerators. All
+tests pass; 31 new regression tests added (20 anchoring + 9 scan-secrets +
+2 dispatch inventory).
+
 ## [v1.9.18] - 2026-05-19
 
 ### Documentation refresh + version-string consolidation

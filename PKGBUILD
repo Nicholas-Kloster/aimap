@@ -1,7 +1,7 @@
 # Maintainer: Nicholas Kloster <security@d5data.ai>
 
 pkgname=aimap
-pkgver=1.9.18
+pkgver=1.9.19
 pkgrel=1
 groups=('blackarch' 'blackarch-scanner' 'blackarch-recon' 'blackarch-networking')
 pkgdesc='Security scanner for AI and ML infrastructure. 120 fingerprints + 50 deep enumerators across LLM runtimes, vector databases, model servers, agent platforms, observability stacks, AI safety/guardrails, medical AI, and voice/audio AI. Surfaces unauthenticated services, exposed credentials, PII, and claimable admin states.'

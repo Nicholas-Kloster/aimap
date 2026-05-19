@@ -124,7 +124,11 @@ var Fingerprints = []Fingerprint{
 		Name:         "vLLM",
 		DefaultPorts: []int{8000, 80, 443},
 		Probes: []Probe{
+			// /v1/models on real vLLM returns {"object":"list","data":[...,{"owned_by":"vllm",...}]}.
+			// Anchored on JSON shape + body to reject blog pages / marketing copy mentioning vllm.
 			{Path: "/v1/models", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "data"},
 				{Type: "body_contains", Value: "vllm"},
 			}},
 		},
@@ -493,8 +497,11 @@ var Fingerprints = []Fingerprint{
 			// Probe 7: body contains the literal "Mcp-Session-Id" anywhere — fallback for
 			// servers that emit the spec header name on non-400 statuses. The Mcp-Session-Id
 			// literal is unique to the MCP Streamable HTTP transport spec.
+			// Anchored against HTML doc-page FPs: real MCP servers emit JSON or plaintext
+			// errors, not HTML pages. <!DOCTYPE html marker rejects vendor docs / blog posts.
 			{Path: "/mcp", Matches: []MatchCond{
 				{Type: "body_contains", Value: "Mcp-Session-Id"},
+				{Type: "body_not_contains", Value: "<!DOCTYPE html"},
 			}},
 			// Probe 8: root path /. Some MCP servers (notably Kestrel/.NET ones like
 			// Vschool.GatewayApi) bind the MCP endpoint at the root, NOT at /mcp. They
@@ -510,8 +517,11 @@ var Fingerprints = []Fingerprint{
 			// Maximally permissive fallback for the root-bound MCP shape — catches
 			// any server that emits the spec header literal on root, regardless of
 			// status code. The literal is spec-unique.
+			// Anchored against HTML doc-page FPs (MCP docs / vendor blogs would
+			// otherwise match): real MCP servers emit JSON or plaintext errors.
 			{Path: "/", Matches: []MatchCond{
 				{Type: "body_contains", Value: "Mcp-Session-Id"},
+				{Type: "body_not_contains", Value: "<!DOCTYPE html"},
 			}},
 		},
 		Severity: "high",
@@ -916,11 +926,19 @@ var Fingerprints = []Fingerprint{
 		Name:         "LiteLLM",
 		DefaultPorts: []int{4000, 80, 443},
 		Probes: []Probe{
+			// /health on real LiteLLM returns {"healthy_endpoints":[...],"unhealthy_endpoints":[...],"healthy_count":N}.
+			// Anchored on status + JSON shape to reject pages that mention litellm in marketing text.
 			{Path: "/health", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "healthy_count"},
 				{Type: "body_contains", Value: "litellm"},
 			}},
+			// /model/info on real LiteLLM returns {"data":[{"model_name":"...","litellm_params":{...}}]}.
+			// The literal "litellm_params" is the LiteLLM-specific signal we anchor on.
 			{Path: "/model/info", Matches: []MatchCond{
-				{Type: "body_contains", Value: "litellm"},
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "data"},
+				{Type: "body_contains", Value: "litellm_params"},
 			}},
 		},
 		Severity: "medium",
@@ -986,8 +1004,12 @@ var Fingerprints = []Fingerprint{
 			{Path: "/api/status", Matches: []MatchCond{
 				{Type: "json_field", Field: "started"},
 			}},
+			// / fallback for deployments where /api/status returns 403 unauth.
+			// Anchored on the HTML title pattern to reject pages that merely mention "jupyter".
 			{Path: "/", Matches: []MatchCond{
-				{Type: "body_contains", Value: "jupyter"},
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "<title>"},
+				{Type: "body_contains", Value: "Jupyter"},
 			}},
 		},
 		Severity: "high",
@@ -998,8 +1020,12 @@ var Fingerprints = []Fingerprint{
 		Name:         "Milvus",
 		DefaultPorts: []int{9091, 19530},
 		Probes: []Probe{
+			// /api/v1/health on real Milvus returns {"is_healthy":true,"detail":[]}.
+			// Anchored on status + JSON shape — is_healthy alone is a generic K8s readiness pattern
+			// and would FP on hundreds of unrelated services if matched on body substring only.
 			{Path: "/api/v1/health", Matches: []MatchCond{
-				{Type: "body_contains", Value: "is_healthy"},
+				{Type: "status_code", Value: "200"},
+				{Type: "json_field", Field: "is_healthy"},
 			}},
 			{Path: "/api/v1/collections", Matches: []MatchCond{
 				{Type: "json_field", Field: "collection_names"},
@@ -1019,7 +1045,12 @@ var Fingerprints = []Fingerprint{
 				{Type: "body_not_contains", Value: "build_hash"},   // anti-CrateDB / anti-ES
 				{Type: "body_not_contains", Value: "qdrant"},       // anti-Qdrant
 			}},
+			// / fallback for deployments where /api/public/health returns 401.
+			// Real Langfuse SPA emits a Next.js page with __NEXT_DATA__ + "Langfuse" in title.
+			// Anchored on Next.js bundle pattern to reject blog/doc pages that mention langfuse.
 			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "__NEXT_DATA__"},
 				{Type: "body_contains", Value: "langfuse"},
 			}},
 		},
@@ -1037,6 +1068,7 @@ var Fingerprints = []Fingerprint{
 				{Type: "body_contains", Value: "dify"},
 			}},
 			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
 				{Type: "body_contains", Value: "<title>Dify</title>"},
 			}},
 		},
@@ -1079,7 +1111,11 @@ var Fingerprints = []Fingerprint{
 				{Type: "json_field", Field: "status"},
 				{Type: "body_contains", Value: "kubeflow"},
 			}},
+			// / fallback for deployments where the pipelines endpoint is gated.
+			// Anchored on HTML title to reject pages that merely reference Kubeflow.
 			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "<title>"},
 				{Type: "body_contains", Value: "Kubeflow"},
 			}},
 		},
@@ -1277,9 +1313,11 @@ var Fingerprints = []Fingerprint{
 		DefaultPorts: []int{3000, 30000},
 		Probes: []Probe{
 			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
 				{Type: "body_contains", Value: "<title>OpenHands</title>"},
 			}},
 			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
 				{Type: "body_contains", Value: "OpenHands Admin Console"},
 			}},
 		},
@@ -1523,6 +1561,7 @@ var Fingerprints = []Fingerprint{
 				{Type: "header_contains", Field: "Set-Cookie", Value: "coolify_session"},
 			}},
 			{Path: "/login", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
 				{Type: "body_contains", Value: "<title>Coolify</title>"},
 			}},
 		},
@@ -1532,7 +1571,10 @@ var Fingerprints = []Fingerprint{
 		Name:         "Clawdbot",
 		DefaultPorts: []int{18789, 443, 80},
 		Probes: []Probe{
+			// clawdbot-app is the React app's root element id — appears in the
+			// real-deployment HTML and not in upstream docs / marketing pages.
 			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
 				{Type: "body_contains", Value: "clawdbot-app"},
 			}},
 		},
@@ -1854,7 +1896,11 @@ var Fingerprints = []Fingerprint{
 				{Type: "body_contains", Value: "whisper asr webservice"},
 				{Type: "body_contains", Value: "/asr"},
 			}},
+			// /inference fallback for the whisper.cpp server variant. The server
+			// returns a 400 error JSON when probed without a multipart audio body,
+			// and the error response contains "whisper.cpp" — anchor on that 400.
 			{Path: "/inference", Matches: []MatchCond{
+				{Type: "status_code", Value: "400"},
 				{Type: "body_contains", Value: "whisper.cpp"},
 			}},
 		},
@@ -2308,7 +2354,11 @@ var Fingerprints = []Fingerprint{
 			{Path: "/dcm4chee-arc/aets", Matches: []MatchCond{
 				{Type: "json_array"},
 			}},
+			// /dcm4chee-arc/ fallback covers the Keycloak-fronted redirect case.
+			// Anchored on status + path so an arbitrary page containing the literal
+			// "dcm4chee" (e.g., a research paper or vendor doc page) does not match.
 			{Path: "/dcm4chee-arc/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
 				{Type: "body_contains", Value: "dcm4chee"},
 			}},
 		},
@@ -2364,35 +2414,75 @@ var Fingerprints = []Fingerprint{
 	// prefix appears in the HTTP body of any service on any port. Detection is
 	// independent of the service type — a Dokploy build log, a React SPA bundle,
 	// a Coolify status page, or a rogue env-var dump all produce the same signal.
-	// Probes are deliberately single-condition (the prefix is the anchor) because
-	// the vendor prefixes are specific enough (sk-lf-, sk-helicone-, sk_live_, etc.)
-	// to be low-FP without co-anchors on root path. Env-var paths (/env, /debug/vars)
-	// use LANGFUSE_SECRET_KEY as the anchor (long enough, vendor-specific).
+	//
+	// Each probe is anchored on status_code = 200 (Insight #6 discipline applied
+	// 2026-05-19): credential leaks in the wild come from 200-response surfaces
+	// (env-var dumps, build logs, JS bundles, debug endpoints). The 4xx/5xx case
+	// where a credential leaks into an error message is left to scanCredentials
+	// at the enumerator stage (which runs against the response body separately).
+	// The prefix itself is the structured signal — vendor-unique, ≥6 chars, with
+	// a hyphen or underscore boundary character that makes substring collisions
+	// vanishingly rare. Final hard-proof verification happens in scanCredentials
+	// via regex extraction + format validation per credentialClass.
+	//
 	// Source: Insight #38 (exfil-credential hard-proof chain).
 	{
 		Name:         "Exposed API Credentials",
 		DefaultPorts: []int{80, 443, 3000, 3001, 4000, 5000, 7860, 8000, 8080, 8443, 8888, 9000},
 		Probes: []Probe{
 			// Langfuse secret key in body
-			{Path: "/", Matches: []MatchCond{{Type: "body_contains", Value: "sk-lf-"}}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "sk-lf-"},
+			}},
 			// Helicone API key in body
-			{Path: "/", Matches: []MatchCond{{Type: "body_contains", Value: "sk-helicone-"}}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "sk-helicone-"},
+			}},
 			// Stripe live secret (highest financial impact)
-			{Path: "/", Matches: []MatchCond{{Type: "body_contains", Value: "sk_live_"}}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "sk_live_"},
+			}},
 			// Stripe test secret
-			{Path: "/", Matches: []MatchCond{{Type: "body_contains", Value: "sk_test_"}}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "sk_test_"},
+			}},
 			// Anthropic API key (current key version prefix)
-			{Path: "/", Matches: []MatchCond{{Type: "body_contains", Value: "sk-ant-api03-"}}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "sk-ant-api03-"},
+			}},
 			// LangSmith tokens
-			{Path: "/", Matches: []MatchCond{{Type: "body_contains", Value: "lsv2_pt_"}}},
-			{Path: "/", Matches: []MatchCond{{Type: "body_contains", Value: "lsv2_sk_"}}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "lsv2_pt_"},
+			}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "lsv2_sk_"},
+			}},
 			// OpenRouter
-			{Path: "/", Matches: []MatchCond{{Type: "body_contains", Value: "sk-or-v1-"}}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "sk-or-v1-"},
+			}},
 			// Slack user token (xoxp- is long enough to be low-FP on root)
-			{Path: "/", Matches: []MatchCond{{Type: "body_contains", Value: "xoxp-"}}},
+			{Path: "/", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "xoxp-"},
+			}},
 			// Langfuse env-var on debug/env endpoints
-			{Path: "/env", Matches: []MatchCond{{Type: "body_contains", Value: "LANGFUSE_SECRET_KEY"}}},
-			{Path: "/debug/vars", Matches: []MatchCond{{Type: "body_contains", Value: "LANGFUSE_SECRET_KEY"}}},
+			{Path: "/env", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "LANGFUSE_SECRET_KEY"},
+			}},
+			{Path: "/debug/vars", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: "LANGFUSE_SECRET_KEY"},
+			}},
 		},
 		Severity: "critical",
 	},

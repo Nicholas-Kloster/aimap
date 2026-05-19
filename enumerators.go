@@ -54,200 +54,111 @@ func isPII(field string) bool {
 	return false
 }
 
-// ── Secret patterns ─────────────────────────────────────────────────
-
-var secretPatterns = []struct {
-	Pattern string
-	Name    string
-}{
-	{"OPENAI_API_KEY", "OpenAI API key in filesystem"},
-	{"ANTHROPIC_API_KEY", "Anthropic API key in filesystem"},
-	{"AWS_ACCESS_KEY_ID", "AWS credentials exposed"},
-	{"AWS_SECRET_ACCESS_KEY", "AWS secret key exposed"},
-	{"GOOGLE_API_KEY", "Google API key in filesystem"},
-	{"AZURE_OPENAI_KEY", "Azure OpenAI key in filesystem"},
-	{"HF_TOKEN", "HuggingFace token in filesystem"},
-	{"HUGGING_FACE", "HuggingFace credential in filesystem"},
-	{"DATABASE_URL", "Database connection string exposed"},
-	{"POSTGRES_PASSWORD", "PostgreSQL password exposed"},
-	{"MYSQL_PASSWORD", "MySQL password exposed"},
-	{"REDIS_PASSWORD", "Redis password exposed"},
-	{"sk-proj-", "OpenAI project key pattern"},
-	{"sk-ant-", "Anthropic key pattern"},
-	{"AKIA", "AWS access key ID pattern"},
-	{"ghp_", "GitHub PAT pattern"},
-	{"glpat-", "GitLab PAT pattern"},
-	{"xoxb-", "Slack bot token pattern"},
-}
-
-// credentialClass is the regex-upgraded credential scanner used by scanCredentials.
-// Each entry has a fast prefix pre-filter, a regex to extract the key, an optional
-// format-validation regex (UUID check for Langfuse, etc.), and a base severity.
-// Source: Insight #38 (exfil-credential hard-proof chain, 2026-05-19).
-type credentialClass struct {
-	Prefix   string
-	Name     string
-	Vendor   string
-	Extract  *regexp.Regexp
-	Format   *regexp.Regexp // nil = no format check beyond Extract
-	Severity string
-}
-
-var credentialClasses = []credentialClass{
-	{
-		Prefix: "sk-lf-", Name: "Langfuse secret key", Vendor: "langfuse",
-		Extract:  regexp.MustCompile(`sk-lf-[a-zA-Z0-9_-]{20,}`),
-		Format:   regexp.MustCompile(`^sk-lf-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`),
-		Severity: "critical",
-	},
-	{
-		Prefix: "pk-lf-", Name: "Langfuse public key", Vendor: "langfuse",
-		Extract:  regexp.MustCompile(`pk-lf-[a-zA-Z0-9_-]{20,}`),
-		Format:   regexp.MustCompile(`^pk-lf-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`),
-		Severity: "high",
-	},
-	{
-		Prefix: "LANGFUSE_SECRET_KEY", Name: "Langfuse secret key (env-var)", Vendor: "langfuse",
-		Extract:  regexp.MustCompile(`LANGFUSE_SECRET_KEY[= '"]+([^\s'"<>&]{8,})`),
-		Severity: "critical",
-	},
-	{
-		Prefix: "sk-helicone-", Name: "Helicone API key", Vendor: "helicone",
-		Extract:  regexp.MustCompile(`sk-helicone-[a-zA-Z0-9_-]{20,}`),
-		Severity: "critical",
-	},
-	{
-		Prefix: "sk_live_", Name: "Stripe live secret key", Vendor: "stripe",
-		Extract:  regexp.MustCompile(`sk_live_[a-zA-Z0-9]{24,}`),
-		Severity: "critical",
-	},
-	{
-		Prefix: "sk_test_", Name: "Stripe test secret key", Vendor: "stripe",
-		Extract:  regexp.MustCompile(`sk_test_[a-zA-Z0-9]{24,}`),
-		Severity: "high",
-	},
-	{
-		Prefix: "pk_live_", Name: "Stripe live publishable key", Vendor: "stripe",
-		Extract:  regexp.MustCompile(`pk_live_[a-zA-Z0-9]{24,}`),
-		Severity: "medium",
-	},
-	{
-		Prefix: "sk-ant-api03-", Name: "Anthropic API key", Vendor: "anthropic",
-		Extract:  regexp.MustCompile(`sk-ant-api03-[a-zA-Z0-9_-]{50,}`),
-		Severity: "critical",
-	},
-	{
-		Prefix: "lsv2_pt_", Name: "LangSmith personal token", Vendor: "langsmith",
-		Extract:  regexp.MustCompile(`lsv2_pt_[a-zA-Z0-9]{32,}`),
-		Severity: "critical",
-	},
-	{
-		Prefix: "lsv2_sk_", Name: "LangSmith service key", Vendor: "langsmith",
-		Extract:  regexp.MustCompile(`lsv2_sk_[a-zA-Z0-9]{32,}`),
-		Severity: "critical",
-	},
-	{
-		Prefix: "sk-or-v1-", Name: "OpenRouter API key", Vendor: "openrouter",
-		Extract:  regexp.MustCompile(`sk-or-v1-[a-zA-Z0-9_-]{40,}`),
-		Severity: "critical",
-	},
-	{
-		Prefix: "xoxp-", Name: "Slack user token", Vendor: "slack",
-		Extract:  regexp.MustCompile(`xoxp-[0-9A-Za-z-]{50,}`),
-		Severity: "critical",
-	},
-	{
-		Prefix: "xoxe-", Name: "Slack refresh token", Vendor: "slack",
-		Extract:  regexp.MustCompile(`xoxe-[0-9A-Za-z-]{50,}`),
-		Severity: "critical",
-	},
-	{
-		Prefix: "xapp-", Name: "Slack app token", Vendor: "slack",
-		Extract:  regexp.MustCompile(`xapp-[0-9A-Za-z-]{50,}`),
-		Severity: "critical",
-	},
-}
-
-// redactKey returns the first 16 chars of a key + "..." — enough for identification,
-// not enough to reconstruct the secret.
-func redactKey(key string) string {
-	if len(key) <= 16 {
-		return key
-	}
-	return key[:16] + "..."
-}
-
-// scanCredentials runs the Insight-#38 credentialClasses against content.
-// Unlike scanSecrets (substring-only), this extracts the key via regex, validates
-// format where a Format pattern is defined, and emits a redacted key fragment.
-// Severity is downgraded one step when format validation fails (likely substring FP).
-func scanCredentials(content string, r *EnumResult) {
-	for _, cc := range credentialClasses {
-		if !strings.Contains(content, cc.Prefix) {
-			continue
-		}
-		keys := cc.Extract.FindAllString(content, 5)
-		seen := map[string]bool{}
-		for _, k := range keys {
-			rk := redactKey(k)
-			if seen[rk] {
-				continue
-			}
-			seen[rk] = true
-			sev := cc.Severity
-			detail := fmt.Sprintf("vendor=%s key=%s", cc.Vendor, rk)
-			if cc.Format != nil {
-				if cc.Format.MatchString(k) {
-					detail += " format=valid"
-				} else {
-					detail += " format=mismatch"
-					switch sev {
-					case "critical":
-						sev = "high"
-					case "high":
-						sev = "medium"
-					}
-				}
-			}
-			r.Findings = append(r.Findings, Finding{
-				Category: "exfil_credential",
-				Title:    cc.Name + " exposed in HTTP response",
-				Detail:   detail,
-				Severity: sev,
-			})
-		}
-	}
-}
-
-func scanSecrets(content string, r *EnumResult) {
-	for _, sp := range secretPatterns {
-		if strings.Contains(content, sp.Pattern) {
-			idx := strings.Index(content, sp.Pattern)
-			snippet := content[idx:]
-			if nl := strings.IndexByte(snippet, '\n'); nl > 0 {
-				snippet = snippet[:nl]
-			}
-			if len(snippet) > 50 {
-				snippet = snippet[:47] + "..."
-			}
-			r.Findings = append(r.Findings, Finding{
-				Category: "credentials",
-				Title:    sp.Name,
-				Detail:   snippet,
-				Severity: "critical",
-			})
-		}
-	}
-}
-
 // ── Dispatcher ──────────────────────────────────────────────────────
 //
 // 2026-05-15: parallelized PHASE 3 via a worker pool. Prior implementation
 // iterated `services` sequentially with a single HTTP client; on a corpus
 // of ~10,000 confirmed Ollama hosts that meant 50+ minutes of wall-clock
 // where threads=100 was set by the user. The flag now flows from main and
-// caps concurrent enumerators at `threads` goroutines. Per-host work is
-// unchanged; only the dispatcher's scheduling discipline.
+// caps concurrent enumerators at `threads` goroutines.
+//
+// 2026-05-19 (v1.9.19): converted from a 50-arm switch statement to a
+// registry-pattern dispatch. enumeratorRegistry maps service name to its
+// enumerator function. Adding a new enumerator is one-line registration
+// next to its enumXxx definition (or in this table); "did you wire it up?"
+// becomes a compile error rather than a silent "no enumerator ran" miss.
+
+// enumeratorFn is the dispatch signature every service enumerator satisfies.
+type enumeratorFn func(c *http.Client, svc ServiceMatch) EnumResult
+
+// enumeratorRegistry maps a fingerprint's Service name to its deep enumerator.
+// If a service has no entry here, runEnumerators falls back to mkResult (a
+// minimal EnumResult with no findings beyond the generic header sweep).
+var enumeratorRegistry = map[string]enumeratorFn{
+	// Vector databases
+	"Weaviate": enumWeaviate,
+	"ChromaDB": enumChromaDB,
+	"Qdrant":   enumQdrant,
+	"Milvus":   enumMilvus,
+
+	// LLM runtimes
+	"Ollama":           enumOllama,
+	"llama.cpp server": enumLlamaCpp,
+	"SGLang":           enumSGLang,
+	"vLLM":             enumVLLM,
+
+	// Image generation
+	"ComfyUI":                  enumComfyUI,
+	"AUTOMATIC1111 / SD WebUI": enumA1111,
+	"InvokeAI":                 enumInvokeAI,
+
+	// Embedding servers
+	"HuggingFace TEI":    enumTEI,
+	"infinity-embedding": enumInfinity,
+	"Embedding API":      enumEmbeddingAPI,
+
+	// ML platforms / experiment tracking
+	"MLflow": enumMLflow,
+
+	// Orchestration / UI
+	"Flowise":     enumFlowise,
+	"Dify":        enumDify,
+	"Open WebUI":  enumOpenWebUI,
+	"SillyTavern": enumSillyTavern,
+
+	// AI agent platforms
+	"OpenHands":              enumOpenHands,
+	"AutoGen Studio":         enumAutoGenStudio,
+	"Anti-detect CDP server": enumAntiDetectCDP,
+	"Mem0":                   enumMem0,
+	"Coolify":                enumCoolify,
+	"Clawdbot":               enumClawdbot,
+
+	// Compute orchestration / workflow
+	"n8n": enumN8n,
+
+	// BI / Dashboard
+	"Metabase":        enumMetabase,
+	"Apache Superset": enumSuperset,
+	"Redash":          enumRedash,
+	"Grafana":         enumGrafana,
+
+	// Observability / tracing
+	"Langfuse":             enumLangfuse,
+	"Arize Phoenix":        enumPhoenix,
+	"Helicone Self-Hosted": enumHelicone,
+	"Lunary":               enumLunary,
+	"OpenLIT":              enumOpenLIT,
+	"Pezzo":                enumPezzo,
+	"Prometheus":           enumPrometheus,
+
+	// Container / Kubernetes / infra
+	"etcd": enumEtcd,
+
+	// Object storage
+	"MinIO": enumMinIO,
+
+	// Analytical datastores
+	"ClickHouse":    enumClickHouse,
+	"Elasticsearch": enumElasticsearch,
+
+	// AI safety / eval / guardrails
+	"Promptfoo":             enumPromptfoo,
+	"NeMo Guardrails":       enumNeMoGuardrails,
+	"DeepEval Server":       enumDeepEval,
+	"LangSmith Self-Hosted": enumLangSmith,
+
+	// Voice / Audio AI
+	"AI TTS Server": enumTTS,
+
+	// Notebooks / dev / adjacent
+	"Jupyter Notebook": enumJupyter,
+	"Open Directory":   enumOpenDirectory,
+	"Docker Registry":  enumDockerRegistry,
+
+	// Cross-cutting
+	"Exposed API Credentials": enumExposedCredentials,
+}
 
 func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool, threads int) []EnumResult {
 	client := newHTTPClient(timeout)
@@ -270,113 +181,14 @@ func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool
 				fmt.Printf("    enumerating %s @ %s\n", svc.Service, svc.BaseURL)
 			}
 			var result EnumResult
-			switch svc.Service {
-		case "Weaviate":
-			result = enumWeaviate(client, svc)
-		case "Ollama":
-			result = enumOllama(client, svc)
-		case "llama.cpp server":
-			result = enumLlamaCpp(client, svc)
-		case "ChromaDB":
-			result = enumChromaDB(client, svc)
-		case "Qdrant":
-			result = enumQdrant(client, svc)
-		case "Flowise":
-			result = enumFlowise(client, svc)
-		case "Jupyter Notebook":
-			result = enumJupyter(client, svc)
-		case "MLflow":
-			result = enumMLflow(client, svc)
-		case "Milvus":
-			result = enumMilvus(client, svc)
-		case "Langfuse":
-			result = enumLangfuse(client, svc)
-		case "SillyTavern":
-			result = enumSillyTavern(client, svc)
-		case "Open WebUI":
-			result = enumOpenWebUI(client, svc)
-		case "OpenHands":
-			result = enumOpenHands(client, svc)
-		case "AutoGen Studio":
-			result = enumAutoGenStudio(client, svc)
-		case "Anti-detect CDP server":
-			result = enumAntiDetectCDP(client, svc)
-		case "Mem0":
-			result = enumMem0(client, svc)
-		case "Coolify":
-			result = enumCoolify(client, svc)
-		case "Clawdbot":
-			result = enumClawdbot(client, svc)
-		case "Open Directory":
-			result = enumOpenDirectory(client, svc)
-		case "Dify":
-			result = enumDify(client, svc)
-		case "Docker Registry":
-			result = enumDockerRegistry(client, svc)
-		case "Metabase":
-			result = enumMetabase(client, svc)
-		case "Apache Superset":
-			result = enumSuperset(client, svc)
-		case "Redash":
-			result = enumRedash(client, svc)
-		case "Grafana":
-			result = enumGrafana(client, svc)
-		case "Prometheus":
-			result = enumPrometheus(client, svc)
-		case "etcd":
-			result = enumEtcd(client, svc)
-		case "MinIO":
-			result = enumMinIO(client, svc)
-		case "n8n":
-			result = enumN8n(client, svc)
-		case "SGLang":
-			result = enumSGLang(client, svc)
-		case "vLLM":
-			result = enumVLLM(client, svc)
-		case "AI TTS Server":
-			result = enumTTS(client, svc)
-		case "Promptfoo":
-			result = enumPromptfoo(client, svc)
-		case "NeMo Guardrails":
-			result = enumNeMoGuardrails(client, svc)
-		case "DeepEval Server":
-			result = enumDeepEval(client, svc)
-		case "LangSmith Self-Hosted":
-			result = enumLangSmith(client, svc)
-		case "Arize Phoenix":
-			result = enumPhoenix(client, svc)
-		case "Helicone Self-Hosted":
-			result = enumHelicone(client, svc)
-		case "Lunary":
-			result = enumLunary(client, svc)
-		case "OpenLIT":
-			result = enumOpenLIT(client, svc)
-		case "Pezzo":
-			result = enumPezzo(client, svc)
-		case "HuggingFace TEI":
-			result = enumTEI(client, svc)
-		case "infinity-embedding":
-			result = enumInfinity(client, svc)
-		case "Embedding API":
-			result = enumEmbeddingAPI(client, svc)
-		case "ComfyUI":
-			result = enumComfyUI(client, svc)
-		case "AUTOMATIC1111 / SD WebUI":
-			result = enumA1111(client, svc)
-		case "InvokeAI":
-			result = enumInvokeAI(client, svc)
-		case "Elasticsearch":
-			result = enumElasticsearch(client, svc)
-		case "ClickHouse":
-			result = enumClickHouse(client, svc)
-		case "Exposed API Credentials":
-			result = enumExposedCredentials(client, svc)
-		default:
-			result = mkResult(svc)
-		}
-		result.Findings = append(result.Findings, checkGeneric(client, svc)...)
-		result.RiskLevel = computeRisk(result)
-		results[idx] = result
+			if fn, ok := enumeratorRegistry[svc.Service]; ok {
+				result = fn(client, svc)
+			} else {
+				result = mkResult(svc)
+			}
+			result.Findings = append(result.Findings, checkGeneric(client, svc)...)
+			result.RiskLevel = computeRisk(result)
+			results[idx] = result
 		}(i)
 	}
 	wg.Wait()
@@ -4330,51 +4142,3 @@ func urlQuery(q string) string {
 	return repl.Replace(q)
 }
 
-// ── Exposed API Credentials (Insight #38) ──────────────────────────
-
-// enumExposedCredentials runs scanCredentials against the matched path body
-// plus a set of paths commonly used to expose environment variables. Fires
-// when the "Exposed API Credentials" fingerprint matches (body_contains on a
-// high-signal vendor key prefix). Emits exfil_credential findings with redacted
-// key fragments; format validation runs where a Format regex is defined.
-func enumExposedCredentials(c *http.Client, svc ServiceMatch) EnumResult {
-	r := mkResult(svc)
-	r.AuthStatus = "none"
-
-	probePaths := []string{
-		svc.MatchPath,
-		"/",
-		"/env",
-		"/debug/vars",
-		"/api/settings",
-		"/.env",
-		"/config",
-		"/health",
-	}
-	seen := map[string]bool{}
-	for _, path := range probePaths {
-		if seen[path] {
-			continue
-		}
-		seen[path] = true
-		if path == "" {
-			continue
-		}
-		sc, _, body, err := httpGET(c, svc.BaseURL+path)
-		if err != nil || sc == 0 {
-			continue
-		}
-		if sc >= 200 && sc < 500 {
-			scanCredentials(string(body), &r)
-			scanSecrets(string(body), &r)
-		}
-	}
-
-	if len(r.Findings) == 0 {
-		r.Details = append(r.Details, "credential prefix in Shodan index but not found on re-fetch (may be stale cache)")
-	} else {
-		r.Details = append(r.Details, fmt.Sprintf("%d credential finding(s) extracted and redacted", len(r.Findings)))
-	}
-	r.RiskLevel = computeRisk(r)
-	return r
-}
