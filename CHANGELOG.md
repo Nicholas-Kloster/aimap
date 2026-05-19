@@ -2,6 +2,52 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.12] - 2026-05-18
+
+### Added: Jetson / NVIDIA edge operator attribution via Docker registry catalog
+
+Jetson-tensorrt edge survey 2026-05-18 surfaced 5 unauthenticated Docker
+registries whose `/v2/_catalog` content fingerprinted the operator as a
+Jetson builder or deployer, even when the registry itself was not on
+Jetson hardware. Direct Jetson dorks (body / title `Jetson`, `Tegra`,
+`L4T`) returned mostly false positives (companies named Jetson, Minecraft
+Bedrock MOTDs, ERP products). The registry-catalog side channel proved to
+be the reliable attribution vector.
+
+The `Docker Registry` deep enumerator now runs a Jetson-attribution pass
+over the repository list and surfaces an `operator-attribution` finding
+when a Jetson signal matches.
+
+**Confidence tiers:**
+
+- **High** (single match suffices): `dustynv/` (Jetson AI Lab containers,
+  github.com/dusty-nv/jetson-containers), `l4t-*` / `*l4t-base` (NVIDIA
+  Linux for Tegra), `jetson` substring, `tegra`, `jetpack`.
+- **Medium** (Jetson when paired with an arch hint): `isaac-lab`,
+  `isaac_ros`, `isaac-sim` (NVIDIA Isaac stack runs on x86 too; arch hint
+  disambiguates).
+- **Low** (architecture hint only): `aarch64`, `_arm`, `-arm-`, `/arm/`.
+
+A medium signal plus an arch hint is promoted to high (the F5 Auriga
+robotics case: `isaac-lab-*` plus `auriga/ros2_dev-aarch64-cpp`).
+
+**Anchoring rule.** Generic `nvidia/*` images (`nvidia/cuda`,
+`nvidia/driver`, `nvidia/deepstream`, `nvidia/gpu-operator`,
+`nvidia/k8s/*`) are NOT Jetson signals on their own. The F3 (Volcano
+Engine GPU Operator x86 K8s mirror) and F2 (HostPapa Harbor mirror with
+`nvidia/deepstream`) cases verify the negative path: NVIDIA server-stack
+operators do not get tagged as Jetson.
+
+**Fixture-driven tests** (`enumerators_jetson_test.go`, 9 cases) cover
+the 5 survey-real registries (F1 mfgbot Hetzner FI, F2 Harbor HostPapa
+US, F3 GPU Operator Volcano Engine CN, F4 RAG-LLM APNIC JP, F5 Auriga
+Aliyun CN) plus edge cases (isaac-sim alone, aarch64 alone, empty
+catalog, commodity-AI without Jetson).
+
+Live-verified against 43.133.1.147:5000 (F4) on release: `dustynv/ollama`
+detection produces the expected `operator-attribution` finding at high
+severity.
+
 ## [v1.9.11] - 2026-05-17
 
 ### Added: One API + NewAPI fingerprints (Survey #21)

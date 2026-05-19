@@ -1116,6 +1116,100 @@ var aiRegistryImages = []string{
 	"n8n", "langchain", "autogen", "comfyui", "stable-diffusion",
 }
 
+// Jetson-attribution signals. A registry catalog leak (/v2/_catalog) that
+// surfaces ANY high-confidence signal fingerprints the operator as a Jetson
+// builder / deployer. Source: Jetson-tensorrt edge survey 2026-05-18, F1
+// mfgbot (Hetzner FI), F4 RAG-on-Jetson (APNIC JP) — both single-signal high
+// confidence (`mfgbot/l4t-base` / `mfgbot-os/jetson/*` for F1; `dustynv/ollama`
+// for F4). F5 Auriga (Aliyun CN) is medium+arch -> promoted to high.
+//
+// High-confidence signals (single match -> Jetson):
+//   - dustynv/         : Dustin Franklin's Jetson AI Lab containers (github.com/dusty-nv/jetson-containers)
+//   - l4t              : NVIDIA Linux for Tegra (Jetson-exclusive base OS)
+//   - jetson           : explicit string in repo path
+//   - tegra            : Jetson SoC family name
+//   - jetpack          : Jetson SDK
+//
+// Medium-confidence signals (Jetson when paired with an arch hint):
+//   - isaac-lab / isaac_ros / isaac-sim : NVIDIA Isaac stack (runs on x86 too;
+//                                          the arch hint disambiguates)
+//
+// Architecture hints (Jetson is aarch64; combined with medium signal -> high):
+//   - aarch64 / -arm- / _arm / /arm/
+var jetsonHighConfidenceSignals = []string{
+	"dustynv/",
+	"/l4t-", "/l4t/", "l4t-base",
+	"/jetson", "jetson/",
+	"tegra",
+	"jetpack",
+}
+
+var jetsonMediumConfidenceSignals = []string{
+	"isaac-lab", "isaac_lab",
+	"isaac-ros", "isaac_ros",
+	"isaac-sim", "isaac_sim",
+}
+
+var jetsonArchHints = []string{
+	"aarch64",
+	"-arm-", "_arm", "/arm/",
+}
+
+// classifyJetsonRepos inspects a /v2/_catalog repository list and returns the
+// matching repos plus a confidence tier. Designed to be pure (no I/O) so it
+// can be unit-tested directly against fixture inputs.
+func classifyJetsonRepos(repos []string) (matched []string, confidence string) {
+	seen := map[string]bool{}
+	var highHits, medHits, archHits []string
+	for _, name := range repos {
+		lower := strings.ToLower(name)
+		hit := false
+		for _, sig := range jetsonHighConfidenceSignals {
+			if strings.Contains(lower, sig) && !seen[name] {
+				highHits = append(highHits, name)
+				seen[name] = true
+				hit = true
+				break
+			}
+		}
+		if hit {
+			continue
+		}
+		for _, sig := range jetsonMediumConfidenceSignals {
+			if strings.Contains(lower, sig) && !seen[name] {
+				medHits = append(medHits, name)
+				seen[name] = true
+				hit = true
+				break
+			}
+		}
+		if hit {
+			continue
+		}
+		for _, sig := range jetsonArchHints {
+			if strings.Contains(lower, sig) && !seen[name] {
+				archHits = append(archHits, name)
+				seen[name] = true
+				break
+			}
+		}
+	}
+	matched = append(append(highHits, medHits...), archHits...)
+	switch {
+	case len(highHits) > 0:
+		confidence = "high"
+	case len(medHits) > 0 && len(archHits) > 0:
+		confidence = "high"
+	case len(medHits) > 0:
+		confidence = "medium"
+	case len(archHits) > 0:
+		confidence = "low"
+	default:
+		confidence = ""
+	}
+	return matched, confidence
+}
+
 func enumDockerRegistry(c *http.Client, svc ServiceMatch) EnumResult {
 	r := mkResult(svc)
 	b := svc.BaseURL
@@ -1162,6 +1256,37 @@ func enumDockerRegistry(c *http.Client, svc ServiceMatch) EnumResult {
 					Title:    fmt.Sprintf("%d AI/ML images in anonymous registry — pull without auth", len(aiRepos)),
 					Detail:   strings.Join(aiRepos, ", "),
 					Severity: "high",
+				})
+			}
+
+			// Jetson-attribution pass. A registry catalog can ship clean of
+			// commodity-AI images yet still surface the operator as a Jetson
+			// builder (F1 mfgbot — only `pytorch` matches aiRegistryImages,
+			// but `l4t-base` + `mfgbot-os/jetson/*` are unambiguous Jetson).
+			repoNames := make([]string, 0, len(repos))
+			for _, repo := range repos {
+				if name, ok := repo.(string); ok {
+					repoNames = append(repoNames, name)
+				}
+			}
+			if jetsonRepos, conf := classifyJetsonRepos(repoNames); conf != "" {
+				r.RawData["jetson_confidence"] = conf
+				r.RawData["jetson_repos"] = jetsonRepos
+				r.Details = append(r.Details, fmt.Sprintf("Jetson attribution (%s): %s", conf, strings.Join(jetsonRepos, ", ")))
+				severity := "info"
+				switch conf {
+				case "high":
+					severity = "high"
+				case "medium":
+					severity = "medium"
+				case "low":
+					severity = "low"
+				}
+				r.Findings = append(r.Findings, Finding{
+					Category: "operator-attribution",
+					Title:    fmt.Sprintf("Jetson / NVIDIA edge operator attributed via /v2/_catalog (%s confidence)", conf),
+					Detail:   strings.Join(jetsonRepos, ", "),
+					Severity: severity,
 				})
 			}
 
