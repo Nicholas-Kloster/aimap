@@ -2,6 +2,64 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.15] - 2026-05-19
+
+### Fixed: `ray` substring FP'd on `krayzdrav` (Insight #6 extended again)
+
+aiRegistryImages contained bare `ray` — matched as substring inside
+`krayzdrav` (Russian/Ukrainian for "regional health"). This is the same
+class of FP that v1.9.14 fixed for `tegra`. Replaced bare `ray` with
+anchored variants: `/ray/`, `ray-`, `/ray-`, `rayproject/`, `anyscale/ray`.
+
+Regression: `TestAIRegistryImages_NoBareRay` (catches any future
+single-token additions) + `TestAIRegistryImages_AnchoredRayStillMatches`
+(confirms `rayproject/ray`, `anyscale/ray`, `my/ray-cluster` still match).
+
+### Added: International healthcare-system signals
+
+The v1.9.13 healthcare signal set was western-DICOM-PACS-centric
+(`dcm4chee`, `orthanc`, `ohif`, `weasis`, `/pacs`, `/dicom`). Registry
+population survey 2026-05-19 found a Russian regional-healthcare operator
+(`88.99.214.110:5000`, repos `external/krayzdrav/fss-*`) that v1.9.13
+missed entirely.
+
+v1.9.15 adds language-specific healthcare-system terms:
+
+- **Russian / Ukrainian** (zdrav = health): `zdrav-`, `/zdrav`, `zdrav/`,
+  `krayzdrav` (regional health), `minzdrav` (ministry of health).
+- **German**: `/klinik`, `klinik-`, `klinik/` (clinic), `krankenhaus`
+  (hospital), `/praxis`, `praxis-` (practice).
+- **Spanish**: `/salud`, `salud-`, `salud/` (health), `/clinica`,
+  `clinica-`, `clinica/` (clinic).
+- **French**: `/sante`, `sante-`, `sante/` (health), `/clinique`,
+  `clinique-` (clinic).
+- **Italian**: `/sanita`, `sanita-` (health), `/ospedale`, `ospedale-`
+  (hospital).
+- **Mandarin** transliteration: `yiyuan` 医院 (hospital).
+- **Japanese** transliteration: `byouin` 病院 (hospital).
+- **Generic medical-system fragments** (path-anchored): `/medical-`,
+  `medical/`, `/hospital-`, `hospital/`.
+
+All multi-letter tokens that could plausibly collide with unrelated
+English words are path/word-anchored per Insight #6 discipline.
+
+Regression: `TestHealthcareClassify_RussianKrayzdrav_High` (the literal
+case that surfaced this), `TestHealthcareClassify_InternationalTerms_High`
+(6-language coverage check), `TestHealthcareClassify_NoCommonWordFP`
+(commodity-stack negative check).
+
+Live re-verify on `88.99.214.110:5000`: healthcare=`high`, 15 healthcare
+repos surfaced.
+
+### Source
+
+Registry-population survey 2026-05-19. The validation cohort of 9 known
+unauth registries gave 33% Jetson attribution; the Shodan-broad population
+sample of 2,878 hosts gave 0.035% Jetson attribution. The very low yield
+amplifies the cost of missed signals — every internationalization gap is
+proportionally more impactful at population scale. Documented as
+[Insight #35](https://github.com/Nicholas-Kloster/AI-LLM-Infrastructure-OSINT/blob/main/methodology/insight-35-side-channel-attribution-high-precision-low-recall.md).
+
 ## [v1.9.14] - 2026-05-19
 
 ### Fixed: Jetson classifier `tegra` substring FP'd on `mcintegration`

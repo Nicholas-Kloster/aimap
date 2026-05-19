@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -170,6 +171,95 @@ func TestFinanceClassify_JetsonF4_None(t *testing.T) {
 	_, conf := classifyFinanceRepos(repos)
 	if conf != "" {
 		t.Fatalf("Jetson F4 must not trigger finance attribution; got %q", conf)
+	}
+}
+
+// Insight #35 regression: Russian regional-healthcare operator must fire on
+// healthcare classifier. Burned 2026-05-19: 88.99.214.110:5000 has repos
+// `external/krayzdrav/fss-public` etc. — krayzdrav = "regional health" in
+// Russian/Ukrainian. v1.9.13 missed it; v1.9.15 expanded signals cover it.
+func TestHealthcareClassify_RussianKrayzdrav_High(t *testing.T) {
+	repos := []string{
+		"external/krayzdrav/equipment",
+		"external/krayzdrav/fss-public",
+		"external/krayzdrav/portal-netrika",
+		"external/krayzdrav/staff",
+		"library/postgres",
+	}
+	matched, conf := classifyHealthcareRepos(repos)
+	if conf != "high" {
+		t.Fatalf("krayzdrav repos must trigger healthcare:high; got %q matched=%v", conf, matched)
+	}
+}
+
+// International healthcare coverage: each major-language term should fire.
+func TestHealthcareClassify_InternationalTerms_High(t *testing.T) {
+	cases := []struct {
+		name  string
+		repos []string
+	}{
+		{"German klinik", []string{"vendor/klinik-portal", "library/nginx"}},
+		{"Spanish salud", []string{"hospital/salud-portal", "library/postgres"}},
+		{"French clinique", []string{"vendor/clinique-app", "library/redis"}},
+		{"Italian ospedale", []string{"vendor/ospedale-portal", "library/mysql"}},
+		{"Mandarin yiyuan", []string{"hospital/yiyuan-portal", "library/nginx"}},
+		{"Japanese byouin", []string{"vendor/byouin-portal", "library/python"}},
+	}
+	for _, c := range cases {
+		_, conf := classifyHealthcareRepos(c.repos)
+		if conf != "high" {
+			t.Fatalf("%s expected healthcare:high; got %q", c.name, conf)
+		}
+	}
+}
+
+// Negative: short English words containing healthcare-term substrings must NOT
+// fire (anchoring discipline). E.g. `klinikum` contains `klinik` (legit), but
+// `redis-bullshit` should not match anything. Test for false-positive
+// avoidance.
+func TestHealthcareClassify_NoCommonWordFP(t *testing.T) {
+	repos := []string{
+		"library/redis", "library/nginx", "library/postgres",
+		"vendor/parasites",      // contains `site` (no health term substring though)
+		"company/strange-image",
+	}
+	_, conf := classifyHealthcareRepos(repos)
+	if conf != "" {
+		t.Fatalf("commodity stack must not trigger healthcare; got %q", conf)
+	}
+}
+
+// v1.9.15 regression: `ray` substring FP'd on `krayzdrav` in the AI-image
+// commodity classifier. The aiRegistryImages list now uses anchored variants.
+// Test indirectly by checking that aiRegistryImages does NOT contain bare
+// `ray` as a single entry (which would substring-match on krayzdrav, prayer,
+// etc.).
+func TestAIRegistryImages_NoBareRay(t *testing.T) {
+	for _, sig := range aiRegistryImages {
+		if sig == "ray" {
+			t.Fatalf("aiRegistryImages contains bare `ray` substring — will FP on krayzdrav/prayer/etc. Use anchored variants instead.")
+		}
+	}
+}
+
+// Confirm anchored ray variants still match legitimate Ray containers.
+func TestAIRegistryImages_AnchoredRayStillMatches(t *testing.T) {
+	candidates := []string{
+		"rayproject/ray",
+		"anyscale/ray",
+		"my/ray-cluster",
+	}
+	for _, repo := range candidates {
+		hit := false
+		for _, sig := range aiRegistryImages {
+			if strings.Contains(repo, sig) {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			t.Fatalf("legitimate Ray repo %q no longer matches any aiRegistryImages signal", repo)
+		}
 	}
 }
 

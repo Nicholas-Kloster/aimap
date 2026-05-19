@@ -1107,10 +1107,14 @@ func enumOpenWebUI(c *http.Client, svc ServiceMatch) EnumResult {
 
 // ── Docker Registry ─────────────────────────────────────────────────
 
+// AI/ML image substrings used to flag a registry as AI-relevant. Each entry
+// must be path/word-anchored, not bare substring — single short tokens like
+// `ray` FP'd on `krayzdrav` (Russian "regional health"). Insight #6 applies.
 var aiRegistryImages = []string{
 	"ollama", "vllm", "localai", "llama", "mistral", "deepseek",
 	"ragflow", "langflow", "flowise", "dify", "openwebui", "open-webui",
-	"sglang", "lmdeploy", "triton", "mlflow", "ray",
+	"sglang", "lmdeploy", "triton", "mlflow",
+	"/ray/", "ray-", "/ray-", "rayproject/", "anyscale/ray", // `ray` was bare-substring; now anchored
 	"pytorch", "tensorflow", "transformers", "huggingface",
 	"chromadb", "qdrant", "weaviate", "milvus",
 	"n8n", "langchain", "autogen", "comfyui", "stable-diffusion",
@@ -1167,15 +1171,32 @@ var jetsonArchHints = []string{
 // (rad teams pull and pin specific images) so single-signal matches are
 // reliable.
 //
+// Internationalization (per Insight #35): the v1.9.13 signal set was
+// western-DICOM-PACS-centric. Population-pass burn-in on the registry
+// survey 2026-05-19 found a Russian regional-healthcare operator
+// (88.99.214.110:5000, repos `external/krayzdrav/fss-*`) that the original
+// classifier missed. v1.9.15 adds language-specific healthcare-system terms:
+// Russian (zdrav, krayzdrav, krayzdravotdel), German (klinik, krankenhaus,
+// praxis), Spanish (salud, clinica, hospital), French (sante, clinique),
+// Italian (sanita, ospedale), Mandarin (yiyuan), Japanese (byouin).
+//
 // High-confidence (single match suffices):
 //   - dcm4chee, orthanc, ohif, weasis : DICOM platform images
 //   - pacs, dicom, dicomweb            : explicit medical imaging strings
-//   - wadors, qido                      : DICOMweb route fragments often baked into image names
+//   - wadors, qido                      : DICOMweb route fragments
+//   - International healthcare-system terms (path/word-anchored)
 //
 // Medium-confidence (paired with adjacent signal -> high):
 //   - radiology, radiology-, radiant   : clinical workflow tools
 //   - imagej                            : medical image processing toolkit
+//
+// Anchoring: all multi-letter tokens that have common-English collisions
+// (e.g., `pacs` would FP on `vmwarepacs` — but no such case yet) are
+// path-anchored. Each signal must contain `/`, `-`, or `_` boundary unless
+// it's a long enough token that bare-substring collision is unlikely
+// (`dcm4chee`, `dicomweb`, `krayzdrav`).
 var healthcareImagingHighSignals = []string{
+	// English / international product names
 	"dcm4chee",
 	"orthancteam/", "osimis/orthanc", "/orthanc",
 	"ohif/", "/ohif-viewer",
@@ -1183,6 +1204,22 @@ var healthcareImagingHighSignals = []string{
 	"/pacs", "pacs-", "pacs/",
 	"/dicom", "dicom/", "dicomweb",
 	"/wadors", "/qido",
+	// Russian / Ukrainian: zdrav = health
+	"zdrav-", "/zdrav", "zdrav/", "krayzdrav", "minzdrav",
+	// German: klinik = clinic, krankenhaus = hospital, praxis = practice
+	"/klinik", "klinik-", "klinik/", "krankenhaus", "/praxis", "praxis-",
+	// Spanish: salud = health, clinica = clinic
+	"/salud", "salud-", "salud/", "/clinica", "clinica-", "clinica/",
+	// French: sante = health, clinique = clinic
+	"/sante", "sante-", "sante/", "/clinique", "clinique-",
+	// Italian: sanita = health, ospedale = hospital
+	"/sanita", "sanita-", "/ospedale", "ospedale-",
+	// Mandarin transliteration: yiyuan = hospital
+	"yiyuan", "/yiyuan", "yiyuan-",
+	// Japanese transliteration: byouin = hospital
+	"byouin", "/byouin",
+	// Generic medical-system fragments (path-anchored)
+	"/medical-", "medical/", "/hospital-", "hospital/",
 }
 
 var healthcareImagingMediumSignals = []string{
