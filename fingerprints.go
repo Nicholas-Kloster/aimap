@@ -944,6 +944,58 @@ var Fingerprints = []Fingerprint{
 		Severity: "medium",
 	},
 	{
+		// sub2api (Wei-Shaw/sub2api) — Go-rewrite successor to claude-relay-
+		// service. Pooled-account upstream proxy: holds N paid Anthropic /
+		// OpenAI / Gemini accounts and serves downstream Tier-3 storefronts.
+		// 7,720 hosts indexed on Shodan as of 2026-05-19 (Wei-Shaw README
+		// claims 8,105 — within 1.8% of Shodan's count).
+		//
+		// The Go rewrite hardened the v1 (Node.js claude-relay-service)
+		// pool-stats surface: account counters, token counters, and
+		// thirdPartyMaxConcurrent are auth-gated. The v1 publicly-readable
+		// pool stats that anchored the 2026-05-19 Anthropic disclosure do
+		// NOT generalize to v2 (0 / 7,720 POOL_LEAK in the survey). Cross-ref
+		// Insight #40 in AI-LLM-Infrastructure-OSINT/methodology/.
+		//
+		// SETUP_OPEN substate: /setup/status returning {"needs_setup":true}
+		// is the install-wizard takeover-on-init vector. Anyone reaching
+		// the host before the operator finishes setup can POST /setup/init
+		// to claim the admin account and bind their own credentials. 101 of
+		// 7,720 sub2api hosts had this in the survey (1.31%). VisorScuba
+		// rule AI.H6 (High) fires on the SETUP-OPEN tag.
+		Name:         "sub2api",
+		DefaultPorts: []int{8080, 443, 8090, 3000},
+		Probes: []Probe{
+			// Anchor 1: /v1/models returns 401 with verbatim sub2api
+			// API_KEY_REQUIRED envelope. Highest-precision single signature
+			// — the exact "Bearer scheme" wording is unique to sub2api
+			// (emitted from backend/internal/gateway/*).
+			{Path: "/v1/models", Matches: []MatchCond{
+				{Type: "status_code", Value: "401"},
+				{Type: "body_contains", Value: "API_KEY_REQUIRED"},
+				{Type: "body_contains", Value: "API key is required in Authorization header (Bearer scheme)"},
+			}},
+			// Anchor 2: /setup/status with the sub2api response envelope.
+			// Catches both pre-setup (needs_setup=true) and post-setup
+			// (needs_setup=false). The {"code":0, "data":{...}} envelope
+			// shape is sub2api-specific.
+			{Path: "/setup/status", Matches: []MatchCond{
+				{Type: "status_code", Value: "200"},
+				{Type: "body_contains", Value: `"needs_setup"`},
+				{Type: "body_contains", Value: `"step"`},
+				{Type: "body_contains", Value: `"code":0`},
+			}},
+			// Anchor 3: /api/v1/admin/users 401 with sub2api UNAUTHORIZED
+			// envelope. Confirms admin-surface auth-on-default.
+			{Path: "/api/v1/admin/users", Matches: []MatchCond{
+				{Type: "status_code", Value: "401"},
+				{Type: "body_contains", Value: `"code":"UNAUTHORIZED"`},
+				{Type: "body_contains", Value: "Authorization required"},
+			}},
+		},
+		Severity: "high",
+	},
+	{
 		// One API (songquanpeng/one-api) — popular open-source LLM gateway.
 		// Self-hosted in Chinese-region operator stacks for brokering OpenAI/
 		// Anthropic/DeepSeek paid keys to downstream users. Default port 3000.

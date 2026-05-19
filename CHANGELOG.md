@@ -2,6 +2,67 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.22] - 2026-05-19
+
+### Added: sub2api fingerprint + `-ports-class` profiles
+
+Two gaps surfaced during the 2026-05-19 sub2api population survey.
+
+**Sub2api fingerprint** (`fingerprints.go`):
+
+Wei-Shaw/sub2api is the Go-rewrite successor to claude-relay-service.
+7,720 hosts indexed on Shodan as of survey day. The survey forced a
+custom 130-line `verify_probe.py` to be written because aimap had no
+sub2api fingerprint. Now it does.
+
+Three conjunctive anchors per Insight #6 discipline:
+
+1. `/v1/models` 401 with verbatim `API_KEY_REQUIRED` envelope and the
+   exact "API key is required in Authorization header (Bearer scheme)"
+   message — the highest-precision single signature, sourced from the
+   sub2api Go source at `backend/internal/gateway/*`.
+2. `/setup/status` 200 with the sub2api `{code:0, data:{needs_setup,
+   step}}` envelope — catches both pre-setup and post-setup states.
+3. `/api/v1/admin/users` 401 with sub2api `{"code":"UNAUTHORIZED"}`
+   envelope — confirms admin-surface auth-on-default.
+
+Default ports: `8080, 443, 8090, 3000` (matches the population
+distribution: 5,121 / 7,720 hosts on :8080, 1,073 on :443).
+
+Severity: `high`. SETUP_OPEN substate (1.31% of the v2 population)
+should be flagged per VisorScuba rule AI.H6 — see
+github.com/Nicholas-Kloster/VisorScuba.
+
+Cross-reference: Insight #40 (auth-on-default thesis shifts rightward
+in successor OSS generations) at
+github.com/Nicholas-Kloster/AI-LLM-Infrastructure-OSINT/methodology/.
+v2 sub2api hardened the v1 publicly-readable pool-stats surface;
+**0 of 7,720 hosts had POOL_LEAK** in the survey.
+
+**`-ports-class <name>` flag** (`port_classes.go`):
+
+14 predefined port profiles for service-focused surveys, replacing the
+51-port default catch-all when narrower coverage suffices:
+
+- `llm-gateway`, `vector-db`, `observability`, `registry`,
+  `network-mesh`, `workflow-orch`, `browser-control`, `sub2api`,
+  `jetson`, `healthcare`, `finance`, `mcp`, `wide` (the existing
+  51-port default kept as a named profile), `minimal` (80/443/8080/8443).
+
+For a service-focused survey this is a 5-10× wall-time reduction.
+The 2026-05-19 sub2api survey ran 22 minutes on the 51-port default;
+the same survey with `-ports-class sub2api` (6 ports) would have
+finished in ~3 minutes.
+
+`ListPortClasses()` is exported so future tools (`visor versions`
+sibling) can introspect the available profiles.
+
+### Tests
+
+Existing test suite passes clean (0.674s). Sub2api fingerprint was
+not added to `fingerprints_systematic_ports_test.go` in this commit;
+a follow-up will extend that to cover the new entry.
+
 ## [v1.9.21] - 2026-05-19
 
 ### Fixed: data race in watchdog tests (race detector under Go 1.25)

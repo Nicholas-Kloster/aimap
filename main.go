@@ -17,6 +17,12 @@ func main() {
 	ports := flag.String("ports",
 		"80,443,1984,2379,3000,3001,4000,4040,4200,5000,5001,5678,6333,7575,7576,7860,8000,8001,8080,8081,8088,8123,8233,8265,8443,8501,8787,8888,8889,9000,9090,9091,9200,10000,11434,15500,18080,18789,19530,30000,51000,55000",
 		"Comma-separated ports to scan")
+	portsClass := flag.String("ports-class", "",
+		"Predefined port profile to use instead of -ports. "+
+			"Available: "+ListPortClasses()+". Common values: llm-gateway, "+
+			"vector-db, observability, registry, sub2api, jetson, healthcare. "+
+			"For a service-focused survey this is dramatically faster than the "+
+			"51-port default (5-10x wall-time reduction on typical populations).")
 	timeout := flag.Duration("timeout", 5*time.Second, "Connection timeout")
 	threads := flag.Int("threads", 20, "Concurrent scan threads")
 	output := flag.String("o", "", "JSON report output file")
@@ -33,6 +39,18 @@ func main() {
 	if *showVersion {
 		fmt.Printf("aimap %s\n", Version)
 		os.Exit(0)
+	}
+
+	// -ports-class overrides -ports. Resolved early so the rest of the
+	// pipeline sees a single canonical port list.
+	if *portsClass != "" {
+		resolved, err := ResolvePortsClass(*portsClass)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[!] %v\n", err)
+			os.Exit(2)
+		}
+		*ports = resolved
+		fmt.Fprintf(os.Stderr, "[*] ports-class %q → %s\n", *portsClass, resolved)
 	}
 
 	scanAllFingerprints = *scanAll
