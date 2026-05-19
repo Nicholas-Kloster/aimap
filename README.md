@@ -23,9 +23,9 @@ Security teams can't secure what they can't see, and AI adoption moves faster th
 
 Generic scanners (`nmap`, `nuclei`) don't identify these as AI services, so they don't show up in the security team's inventory. aimap does.
 
-The 120 fingerprints in this release were forged from population-scale exposure surveys: 16,000+ unauthenticated Ollama deployments, 13,000+ Docker registries, 10,000+ NVIDIA Jetson edge devices, hundreds of extortion-wiped Elasticsearch clusters. Every fingerprint that ships passes the population-FP discipline: multi-condition matches anchored to status code + JSON shape + body, with a named regression test for every false-positive class the survey burned. Case studies are published at [nuclide-research.com](https://nuclide-research.com).
+The 121 fingerprints in this release were forged from population-scale exposure surveys: 16,000+ unauthenticated Ollama deployments, 13,000+ Docker registries, 10,000+ NVIDIA Jetson edge devices, hundreds of extortion-wiped Elasticsearch clusters. Every fingerprint that ships passes the population-FP discipline: multi-condition matches anchored to status code + JSON shape + body, with a named regression test for every false-positive class the survey burned. Case studies are published at [nuclide-research.com](https://nuclide-research.com).
 
-## What it detects (120 services, 50 deep enumerators)
+## What it detects (121 services, 50 deep enumerators)
 
 | Category | Services |
 |---|---|
@@ -35,7 +35,7 @@ The 120 fingerprints in this release were forged from population-scale exposure 
 | Embedding servers | HuggingFace TEI, infinity-embedding, Embedding API |
 | Model serving | TensorFlow Serving, Triton Inference Server, NVIDIA NIM |
 | ML platforms / experiment tracking | MLflow, Weights & Biases, WandB Service, ClearML, Aim |
-| Orchestration / UI | LangServe, Flowise, Dify, Open WebUI, SillyTavern, LiteLLM, One API, NewAPI, BentoML |
+| Orchestration / UI | LangServe, Flowise, Dify, Open WebUI, SillyTavern, LiteLLM, One API, NewAPI, BentoML, sub2api |
 | AI agent platforms | OpenHands, AutoGen Studio, Anti-detect CDP server, Mem0, Coolify, Clawdbot |
 | MCP | MCP Server |
 | Code assistants | Sourcegraph, Sourcebot, Sweep AI, Tabnine Context Engine, Dyad, bolt.diy, Refact |
@@ -54,7 +54,45 @@ The 120 fingerprints in this release were forged from population-scale exposure 
 | Notebooks / dev / adjacent | Jupyter Notebook, Open Directory, Docker Registry |
 | Cross-cutting | Exposed API Credentials (Langfuse, Helicone, Stripe, Anthropic, LangSmith, OpenRouter, Slack — surfaces vendor keys in HTTP responses independent of the host's primary service) |
 
-Each service has a dedicated fingerprint. 50 of the 120 services also have dedicated deep enumerators that surface PII fields, unauthenticated RCE, exposed credentials, claimable admin states, and other actionable findings.
+Each service has a dedicated fingerprint. 50 of the 121 services also have dedicated deep enumerators that surface PII fields, unauthenticated RCE, exposed credentials, claimable admin states, and other actionable findings.
+
+## Port profiles (`-ports-class`)
+
+The default 51-port scan is wide coverage for catch-all recon. For
+service-focused surveys, `-ports-class <name>` narrows to a hand-curated
+list — 5-10× wall-time reduction on typical populations (a 22-minute
+sub2api survey on the default port set finishes in ~3 minutes with
+`-ports-class sub2api`).
+
+14 named profiles ship today:
+
+| Profile | Ports | Best for |
+|---|---|---|
+| `llm-gateway` | 80, 443, 3000, 4000, 5000, 7860, 8000, 8001, 8080, 8443, 8888, 11434 | Ollama, vLLM, TGI, OpenWebUI, LiteLLM, sub2api, One API surveys |
+| `vector-db` | 6333-6334, 7575-7576, 8000, 8123, 19121, 19530, 50051, 51000, 55000 | Qdrant, Weaviate, Chroma, Milvus, pgvector |
+| `observability` | 3000, 4317, 5601, 6006, 8123, 9090-9094, 9100, 16686 | Phoenix, Langfuse, Helicone, Lunary, MLflow, OpenLLMetry |
+| `registry` | 80, 443, 2376-2377, 5000-5001, 8080-8081, 8443, 9000, 9090 | Docker, Harbor, Quay |
+| `network-mesh` | 4040, 4191, 8001, 9090-9092, 9901, 9999, 15010, 15012, 15014 | Envoy admin, Istio, Linkerd, Pomerium |
+| `workflow-orch` | 2746, 3000, 4200, 7000, 7077, 8080, 8090, 8233, 8265, 8888 | Prefect, Dagster, Temporal, Argo |
+| `browser-control` | 3000-3001, 3033, 4040, 4242, 4444, 8050, 9222, 9333 | CDP, Splash, Selenium Grid, Selenoid |
+| `sub2api` | 80, 443, 3000, 8080, 8090, 8443 | sub2api-class pooled-account proxies |
+| `jetson` | 80, 443, 5000, 5050, 8000-8002, 8554, 8765, 8888, 9090 | Jetson edge AI, Triton, CodeProject.AI, Frigate |
+| `healthcare` | 80, 443, 4242, 8042-8043, 8080, 8200, 8443, 9090, 11112 | DICOM / PACS / dcm4chee / Orthanc |
+| `finance` | 80, 443, 5000, 5555, 8000, 8080, 8443, 8501, 8888, 9090 | QuantConnect, OpenBB, JESSE |
+| `mcp` | 3000-3001, 5173-5174, 8000-8001, 8080-8081, 11434 | Model Context Protocol servers |
+| `wide` | 51 ports (the existing default catch-all) | Mixed-class recon |
+| `minimal` | 80, 443, 8080, 8443 | Quick "is this host alive" probe |
+
+Example:
+
+```bash
+aimap -list candidates.txt -ports-class sub2api -threads 30 -o out.json
+```
+
+Use `aimap -ports-class wide` to explicitly select the 51-port default.
+Define new profiles in [`port_classes.go`](port_classes.go) — single
+map, no other files touched.
+
 
 ## Companion tool: `aimap-profile`
 
@@ -160,7 +198,7 @@ Terminal output is colorized, human-readable, and includes per-service risk scor
 |------|---------|
 | `main.go` | CLI entry point, 3-phase orchestration, flag parsing |
 | `scanner.go` | Parallel TCP connect + HTTP probe (Phase 1) |
-| `fingerprints.go` | 120-entry fingerprint database + match engine (Phase 2) |
+| `fingerprints.go` | 121-entry fingerprint database + match engine (Phase 2) |
 | `enumerators.go` | 50 service-specific deep enumerators + credential/secret scanners (Phase 3) |
 | `adjacency.go` | ML-adjacency rule — data-tier ports on hosts with confirmed AI services (Insight #20) |
 | `reporter.go` | Colored terminal output + JSON export |
@@ -253,7 +291,7 @@ MIT. See [LICENSE](LICENSE).
 
 aimap is the fingerprint engine NuClide research surveys run on. The tool is open source under MIT. The methodology is published. The case studies are public.
 
-Defenders run aimap against their own networks. Researchers run it against authorized populations. The 120 fingerprints come from real survey work: hundreds of thousands of probes across exposed Ollama deployments, Weaviate vector databases, MLflow trackers, Langfuse instances, Docker registries, NVIDIA Jetson edge devices, Frigate camera fleets, Elasticsearch clusters, code-assistant servers, and the long tail of AI services that ship `--host 0.0.0.0` by default.
+Defenders run aimap against their own networks. Researchers run it against authorized populations. The 121 fingerprints come from real survey work: hundreds of thousands of probes across exposed Ollama deployments, Weaviate vector databases, MLflow trackers, Langfuse instances, Docker registries, NVIDIA Jetson edge devices, Frigate camera fleets, Elasticsearch clusters, code-assistant servers, and the long tail of AI services that ship `--host 0.0.0.0` by default.
 
 Every fingerprint passes a population-FP discipline before it ships: multi-condition `Matches[]` anchored to status code + JSON shape + body, with a named regression test for every false-positive class the survey burned. The discipline is enforced because at population scale, a 0.1% FP rate against 10,000 hosts means 10 wrong findings, and the noise breaks the survey.
 
