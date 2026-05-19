@@ -80,6 +80,145 @@ var secretPatterns = []struct {
 	{"xoxb-", "Slack bot token pattern"},
 }
 
+// credentialClass is the regex-upgraded credential scanner used by scanCredentials.
+// Each entry has a fast prefix pre-filter, a regex to extract the key, an optional
+// format-validation regex (UUID check for Langfuse, etc.), and a base severity.
+// Source: Insight #38 (exfil-credential hard-proof chain, 2026-05-19).
+type credentialClass struct {
+	Prefix   string
+	Name     string
+	Vendor   string
+	Extract  *regexp.Regexp
+	Format   *regexp.Regexp // nil = no format check beyond Extract
+	Severity string
+}
+
+var credentialClasses = []credentialClass{
+	{
+		Prefix: "sk-lf-", Name: "Langfuse secret key", Vendor: "langfuse",
+		Extract:  regexp.MustCompile(`sk-lf-[a-zA-Z0-9_-]{20,}`),
+		Format:   regexp.MustCompile(`^sk-lf-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`),
+		Severity: "critical",
+	},
+	{
+		Prefix: "pk-lf-", Name: "Langfuse public key", Vendor: "langfuse",
+		Extract:  regexp.MustCompile(`pk-lf-[a-zA-Z0-9_-]{20,}`),
+		Format:   regexp.MustCompile(`^pk-lf-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`),
+		Severity: "high",
+	},
+	{
+		Prefix: "LANGFUSE_SECRET_KEY", Name: "Langfuse secret key (env-var)", Vendor: "langfuse",
+		Extract:  regexp.MustCompile(`LANGFUSE_SECRET_KEY[= '"]+([^\s'"<>&]{8,})`),
+		Severity: "critical",
+	},
+	{
+		Prefix: "sk-helicone-", Name: "Helicone API key", Vendor: "helicone",
+		Extract:  regexp.MustCompile(`sk-helicone-[a-zA-Z0-9_-]{20,}`),
+		Severity: "critical",
+	},
+	{
+		Prefix: "sk_live_", Name: "Stripe live secret key", Vendor: "stripe",
+		Extract:  regexp.MustCompile(`sk_live_[a-zA-Z0-9]{24,}`),
+		Severity: "critical",
+	},
+	{
+		Prefix: "sk_test_", Name: "Stripe test secret key", Vendor: "stripe",
+		Extract:  regexp.MustCompile(`sk_test_[a-zA-Z0-9]{24,}`),
+		Severity: "high",
+	},
+	{
+		Prefix: "pk_live_", Name: "Stripe live publishable key", Vendor: "stripe",
+		Extract:  regexp.MustCompile(`pk_live_[a-zA-Z0-9]{24,}`),
+		Severity: "medium",
+	},
+	{
+		Prefix: "sk-ant-api03-", Name: "Anthropic API key", Vendor: "anthropic",
+		Extract:  regexp.MustCompile(`sk-ant-api03-[a-zA-Z0-9_-]{50,}`),
+		Severity: "critical",
+	},
+	{
+		Prefix: "lsv2_pt_", Name: "LangSmith personal token", Vendor: "langsmith",
+		Extract:  regexp.MustCompile(`lsv2_pt_[a-zA-Z0-9]{32,}`),
+		Severity: "critical",
+	},
+	{
+		Prefix: "lsv2_sk_", Name: "LangSmith service key", Vendor: "langsmith",
+		Extract:  regexp.MustCompile(`lsv2_sk_[a-zA-Z0-9]{32,}`),
+		Severity: "critical",
+	},
+	{
+		Prefix: "sk-or-v1-", Name: "OpenRouter API key", Vendor: "openrouter",
+		Extract:  regexp.MustCompile(`sk-or-v1-[a-zA-Z0-9_-]{40,}`),
+		Severity: "critical",
+	},
+	{
+		Prefix: "xoxp-", Name: "Slack user token", Vendor: "slack",
+		Extract:  regexp.MustCompile(`xoxp-[0-9A-Za-z-]{50,}`),
+		Severity: "critical",
+	},
+	{
+		Prefix: "xoxe-", Name: "Slack refresh token", Vendor: "slack",
+		Extract:  regexp.MustCompile(`xoxe-[0-9A-Za-z-]{50,}`),
+		Severity: "critical",
+	},
+	{
+		Prefix: "xapp-", Name: "Slack app token", Vendor: "slack",
+		Extract:  regexp.MustCompile(`xapp-[0-9A-Za-z-]{50,}`),
+		Severity: "critical",
+	},
+}
+
+// redactKey returns the first 16 chars of a key + "..." — enough for identification,
+// not enough to reconstruct the secret.
+func redactKey(key string) string {
+	if len(key) <= 16 {
+		return key
+	}
+	return key[:16] + "..."
+}
+
+// scanCredentials runs the Insight-#38 credentialClasses against content.
+// Unlike scanSecrets (substring-only), this extracts the key via regex, validates
+// format where a Format pattern is defined, and emits a redacted key fragment.
+// Severity is downgraded one step when format validation fails (likely substring FP).
+func scanCredentials(content string, r *EnumResult) {
+	for _, cc := range credentialClasses {
+		if !strings.Contains(content, cc.Prefix) {
+			continue
+		}
+		keys := cc.Extract.FindAllString(content, 5)
+		seen := map[string]bool{}
+		for _, k := range keys {
+			rk := redactKey(k)
+			if seen[rk] {
+				continue
+			}
+			seen[rk] = true
+			sev := cc.Severity
+			detail := fmt.Sprintf("vendor=%s key=%s", cc.Vendor, rk)
+			if cc.Format != nil {
+				if cc.Format.MatchString(k) {
+					detail += " format=valid"
+				} else {
+					detail += " format=mismatch"
+					switch sev {
+					case "critical":
+						sev = "high"
+					case "high":
+						sev = "medium"
+					}
+				}
+			}
+			r.Findings = append(r.Findings, Finding{
+				Category: "exfil_credential",
+				Title:    cc.Name + " exposed in HTTP response",
+				Detail:   detail,
+				Severity: sev,
+			})
+		}
+	}
+}
+
 func scanSecrets(content string, r *EnumResult) {
 	for _, sp := range secretPatterns {
 		if strings.Contains(content, sp.Pattern) {
@@ -230,6 +369,8 @@ func runEnumerators(services []ServiceMatch, timeout time.Duration, verbose bool
 			result = enumElasticsearch(client, svc)
 		case "ClickHouse":
 			result = enumClickHouse(client, svc)
+		case "Exposed API Credentials":
+			result = enumExposedCredentials(client, svc)
 		default:
 			result = mkResult(svc)
 		}
@@ -4187,4 +4328,53 @@ func urlQuery(q string) string {
 		"=", "%3D",
 	)
 	return repl.Replace(q)
+}
+
+// ── Exposed API Credentials (Insight #38) ──────────────────────────
+
+// enumExposedCredentials runs scanCredentials against the matched path body
+// plus a set of paths commonly used to expose environment variables. Fires
+// when the "Exposed API Credentials" fingerprint matches (body_contains on a
+// high-signal vendor key prefix). Emits exfil_credential findings with redacted
+// key fragments; format validation runs where a Format regex is defined.
+func enumExposedCredentials(c *http.Client, svc ServiceMatch) EnumResult {
+	r := mkResult(svc)
+	r.AuthStatus = "none"
+
+	probePaths := []string{
+		svc.MatchPath,
+		"/",
+		"/env",
+		"/debug/vars",
+		"/api/settings",
+		"/.env",
+		"/config",
+		"/health",
+	}
+	seen := map[string]bool{}
+	for _, path := range probePaths {
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		if path == "" {
+			continue
+		}
+		sc, _, body, err := httpGET(c, svc.BaseURL+path)
+		if err != nil || sc == 0 {
+			continue
+		}
+		if sc >= 200 && sc < 500 {
+			scanCredentials(string(body), &r)
+			scanSecrets(string(body), &r)
+		}
+	}
+
+	if len(r.Findings) == 0 {
+		r.Details = append(r.Details, "credential prefix in Shodan index but not found on re-fetch (may be stale cache)")
+	} else {
+		r.Details = append(r.Details, fmt.Sprintf("%d credential finding(s) extracted and redacted", len(r.Findings)))
+	}
+	r.RiskLevel = computeRisk(r)
+	return r
 }

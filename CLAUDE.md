@@ -2,7 +2,7 @@
 
 `nmap` for AI infrastructure. Single Go binary that finds exposed LLM runtimes, vector databases, ML model servers, MCP servers, AI safety / eval / guardrails platforms, observability/tracing services, and orchestrators. Enumerates what's running, what's unprotected, and what data is inside via dedicated deep enumerators per platform class.
 
-**69 service fingerprints + 36 deep enumerators** (as of v1.x — see `CHANGELOG.md`).
+**70 service fingerprints + 37 deep enumerators** (as of v1.x — see `CHANGELOG.md`).
 
 ## Language
 Go (single static binary, ~8 MB)

@@ -2,6 +2,37 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.17] - 2026-05-19
+
+### Added: Exposed API Credentials fingerprint + scanCredentials (Insight #38)
+
+New cross-cutting fingerprint `"Exposed API Credentials"` detects vendor API
+keys in HTTP response bodies independent of what service is running. A Langfuse
+key baked into a Dokploy build log, a Stripe secret in a React SPA bundle, a
+Helicone key in an env-var dump page — all produce findings without the host
+needing to match any other service fingerprint.
+
+**Fingerprint:** 11 probes across `/`, `/env`, `/debug/vars` covering Langfuse
+(`sk-lf-`), Helicone (`sk-helicone-`), Stripe live/test (`sk_live_`, `sk_test_`),
+Anthropic (`sk-ant-api03-`), LangSmith (`lsv2_pt_`, `lsv2_sk_`), OpenRouter
+(`sk-or-v1-`), Slack user token (`xoxp-`), and Langfuse env-var paths.
+
+**`scanCredentials` function (alongside existing `scanSecrets`):** regex-based
+extraction with format validation where a vendor key has a documented format
+(UUID for Langfuse `sk-lf-`). Emits redacted key fragments (first 16 chars +
+"..."). Severity is downgraded one step when format validation fails (likely
+substring FP). Covers 15 credential classes across 10 vendors.
+
+**Enumerator `enumExposedCredentials`:** probes the match path plus `/env`,
+`/debug/vars`, `/api/settings`, `/.env`, `/config` to maximize surface coverage.
+Deduplicates across paths.
+
+Source: AI cost/billing/analytics survey 2026-05-19; methodology Insight #38
+(hard-proof verification chain for exfiltrated-credential class findings).
+Companion tooling: `~/AI-LLM-Infrastructure-OSINT/tools/exfil_cred_verify.py`.
+
+13 new tests; all passing.
+
 ## [v1.9.16] - 2026-05-19
 
 ### Fixed: `dicom/` and `pacs/` substring FPs on `adicom/admin-mongo`

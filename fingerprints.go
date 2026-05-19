@@ -2359,6 +2359,43 @@ var Fingerprints = []Fingerprint{
 		},
 		Severity: "high",
 	},
+	// ── Exposed API Credentials (Insight #38, 2026-05-19) ──────────────
+	// Cross-cutting fingerprint that fires when a high-signal vendor credential
+	// prefix appears in the HTTP body of any service on any port. Detection is
+	// independent of the service type — a Dokploy build log, a React SPA bundle,
+	// a Coolify status page, or a rogue env-var dump all produce the same signal.
+	// Probes are deliberately single-condition (the prefix is the anchor) because
+	// the vendor prefixes are specific enough (sk-lf-, sk-helicone-, sk_live_, etc.)
+	// to be low-FP without co-anchors on root path. Env-var paths (/env, /debug/vars)
+	// use LANGFUSE_SECRET_KEY as the anchor (long enough, vendor-specific).
+	// Source: Insight #38 (exfil-credential hard-proof chain).
+	{
+		Name:         "Exposed API Credentials",
+		DefaultPorts: []int{80, 443, 3000, 3001, 4000, 5000, 7860, 8000, 8080, 8443, 8888, 9000},
+		Probes: []Probe{
+			// Langfuse secret key in body
+			{Path: "/", Matches: []MatchCond{{Type: "body_contains", Value: "sk-lf-"}}},
+			// Helicone API key in body
+			{Path: "/", Matches: []MatchCond{{Type: "body_contains", Value: "sk-helicone-"}}},
+			// Stripe live secret (highest financial impact)
+			{Path: "/", Matches: []MatchCond{{Type: "body_contains", Value: "sk_live_"}}},
+			// Stripe test secret
+			{Path: "/", Matches: []MatchCond{{Type: "body_contains", Value: "sk_test_"}}},
+			// Anthropic API key (current key version prefix)
+			{Path: "/", Matches: []MatchCond{{Type: "body_contains", Value: "sk-ant-api03-"}}},
+			// LangSmith tokens
+			{Path: "/", Matches: []MatchCond{{Type: "body_contains", Value: "lsv2_pt_"}}},
+			{Path: "/", Matches: []MatchCond{{Type: "body_contains", Value: "lsv2_sk_"}}},
+			// OpenRouter
+			{Path: "/", Matches: []MatchCond{{Type: "body_contains", Value: "sk-or-v1-"}}},
+			// Slack user token (xoxp- is long enough to be low-FP on root)
+			{Path: "/", Matches: []MatchCond{{Type: "body_contains", Value: "xoxp-"}}},
+			// Langfuse env-var on debug/env endpoints
+			{Path: "/env", Matches: []MatchCond{{Type: "body_contains", Value: "LANGFUSE_SECRET_KEY"}}},
+			{Path: "/debug/vars", Matches: []MatchCond{{Type: "body_contains", Value: "LANGFUSE_SECRET_KEY"}}},
+		},
+		Severity: "critical",
+	},
 }
 
 // ── Matching engine ─────────────────────────────────────────────────
