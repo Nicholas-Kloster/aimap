@@ -2,6 +2,36 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.14] - 2026-05-19
+
+### Fixed: Jetson classifier `tegra` substring FP'd on `mcintegration`
+
+Population-pass burn-in: 160.85.252.184:5000 has the single repo
+`d-gree-mcintegration` in its `/v2/_catalog`. The Jetson high-signal list
+included bare `tegra`; `mcintegration` contains the substring `tegra`
+(inside `integration`); the classifier fired a high-confidence Jetson
+attribution where none exists.
+
+This is the load-bearing reason Insight #6 (conjunctive marker-anchored
+matchers) is mandatory. The Insight already applied to body-text matchers;
+v1.9.14 extends the discipline into the registry-catalog matcher.
+
+**Fix.** Replaced bare `tegra` with path/word-anchored variants:
+`/tegra`, `tegra/`, `tegra-`, `-tegra`, `tegra_`, `_tegra`. Single-token
+`tegra` is no longer a high-confidence signal.
+
+**Tests.** Added regression `TestJetsonClassify_McIntegration_NoFP` covering
+the literal FP case, and `TestJetsonClassify_RealTegraVariants_High`
+confirming the anchored variants still fire on legitimate paths
+(`nvidia/l4t-tegra-cuda`, `vendor/tegra-base`, `my/tegra/builds`,
+`build/tegra_pytorch`, `my_tegra_image`).
+
+**Live re-verify.** 160.85.252.184:5000 after rebuild: jetson=`-`,
+healthcare=`-`, finance=`-` (correctly silent).
+
+**Source.** Registry-population survey 2026-05-19, first pass burned the FP
+on host #160 of 1,905. Caught before the 10,388-host second pass.
+
 ## [v1.9.13] - 2026-05-18
 
 ### Added: Healthcare imaging (PACS / DICOM) and Finance / algotrading operator attribution

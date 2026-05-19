@@ -203,6 +203,36 @@ func TestJetsonClassify_Aarch64Alone_Low(t *testing.T) {
 	}
 }
 
+// Insight #6 regression: bare `tegra` substring inside `mcintegration` must
+// NOT fire jetson:high. Burned by 160.85.252.184 in the 2026-05-19 registry
+// population survey. Fix: path/word-anchor the `tegra` signal variants.
+func TestJetsonClassify_McIntegration_NoFP(t *testing.T) {
+	repos := []string{
+		"d-gree-mcintegration",
+		"d-gree-mcintegration/api",
+	}
+	_, conf := classifyJetsonRepos(repos)
+	if conf != "" {
+		t.Fatalf("`mcintegration` (substring `tegra`) must not fire; got %q", conf)
+	}
+}
+
+// Confirm real tegra-anchored variants still fire.
+func TestJetsonClassify_RealTegraVariants_High(t *testing.T) {
+	for _, repo := range []string{
+		"nvidia/l4t-tegra-cuda",   // -tegra-
+		"vendor/tegra-base",        // tegra-
+		"my/tegra/builds",          // /tegra/
+		"build/tegra_pytorch",      // tegra_
+		"my_tegra_image",           // _tegra
+	} {
+		_, conf := classifyJetsonRepos([]string{repo})
+		if conf != "high" {
+			t.Fatalf("expected jetson:high on anchored tegra variant %q; got %q", repo, conf)
+		}
+	}
+}
+
 // Edge: empty catalog -> no attribution.
 func TestJetsonClassify_EmptyCatalog_None(t *testing.T) {
 	_, conf := classifyJetsonRepos([]string{})

@@ -1140,7 +1140,12 @@ var jetsonHighConfidenceSignals = []string{
 	"dustynv/",
 	"/l4t-", "/l4t/", "l4t-base",
 	"/jetson", "jetson/",
-	"tegra",
+	// `tegra` must be path/word-anchored, not bare substring. Bare `tegra`
+	// FP'd on `mcintegration` (substring inside `integration`) at population
+	// scale (160.85.252.184 in the 2026-05-19 registry pop survey). Insight
+	// #6 (conjunctive marker-anchored matchers) — applies inside this
+	// classifier as much as it applies to body-text matchers.
+	"/tegra", "tegra/", "tegra-", "-tegra", "tegra_", "_tegra",
 	"jetpack",
 }
 
