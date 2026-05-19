@@ -1155,16 +1155,95 @@ var jetsonArchHints = []string{
 	"-arm-", "_arm", "/arm/",
 }
 
-// classifyJetsonRepos inspects a /v2/_catalog repository list and returns the
-// matching repos plus a confidence tier. Designed to be pure (no I/O) so it
-// can be unit-tested directly against fixture inputs.
-func classifyJetsonRepos(repos []string) (matched []string, confidence string) {
+// Healthcare-imaging operator signals. Sources: dcm4chee-arc-light (the
+// reference open-source DICOM archive), Orthanc (the other dominant PACS),
+// OHIF Viewer + Weasis (DICOM web clients), DICOMweb route prefixes (`/dicom`,
+// `/wadors`, `/qido`). Healthcare imaging registries are operator-curated
+// (rad teams pull and pin specific images) so single-signal matches are
+// reliable.
+//
+// High-confidence (single match suffices):
+//   - dcm4chee, orthanc, ohif, weasis : DICOM platform images
+//   - pacs, dicom, dicomweb            : explicit medical imaging strings
+//   - wadors, qido                      : DICOMweb route fragments often baked into image names
+//
+// Medium-confidence (paired with adjacent signal -> high):
+//   - radiology, radiology-, radiant   : clinical workflow tools
+//   - imagej                            : medical image processing toolkit
+var healthcareImagingHighSignals = []string{
+	"dcm4chee",
+	"orthancteam/", "osimis/orthanc", "/orthanc",
+	"ohif/", "/ohif-viewer",
+	"weasis",
+	"/pacs", "pacs-", "pacs/",
+	"/dicom", "dicom/", "dicomweb",
+	"/wadors", "/qido",
+}
+
+var healthcareImagingMediumSignals = []string{
+	"radiology", "radiant-",
+	"imagej-",
+}
+
+func classifyHealthcareRepos(repos []string) (matched []string, confidence string) {
+	return classifyRepos(repos, healthcareImagingHighSignals, healthcareImagingMediumSignals, nil)
+}
+
+// Finance / algotrading operator signals. The retail-and-prop algo trading
+// stack standardizes on a few open-source brokers and quant libraries.
+// Each one is a strong indicator the operator is running a live or
+// backtesting trading bot (and exposing it).
+//
+// High-confidence (single match suffices):
+//   - freqtrade, freqtradeorg/      : the dominant open-source crypto trading bot
+//   - quantlib                       : the dominant quant finance library
+//   - vector-bt, vectorbt            : vectorized backtesting library
+//   - alpaca, alpaca-py              : Alpaca broker API
+//   - ibapi, ib-gateway, ibkr        : Interactive Brokers gateway / API
+//   - oanda, oandapy                 : OANDA fx broker
+//   - mt4, mt5, metatrader           : MetaTrader 4 / 5 (Windows fx)
+//   - nautilus_trader                : nautilus algo trading platform
+//
+// Medium-confidence (paired with adjacent signal -> high):
+//   - backtrader, zipline, lean-engine : backtesting frameworks (also used in
+//                                         analysis pipelines that aren't trading)
+//   - binance-, kraken-, coinbase-     : exchange-API wrappers
+var financeTradingHighSignals = []string{
+	"freqtrade",
+	"quantlib",
+	"vector-bt", "vectorbt",
+	"alpaca/", "alpaca-",
+	"ibapi", "ib-gateway", "/ibkr",
+	"oanda",
+	"/mt4", "/mt5", "metatrader",
+	"nautilus_trader", "nautilus-trader",
+}
+
+var financeTradingMediumSignals = []string{
+	"backtrader", "zipline", "lean-engine",
+	"binance-", "kraken-", "coinbase-",
+}
+
+func classifyFinanceRepos(repos []string) (matched []string, confidence string) {
+	return classifyRepos(repos, financeTradingHighSignals, financeTradingMediumSignals, nil)
+}
+
+// classifyRepos is the shared engine for all per-operator-class registry
+// classifiers. Each class supplies its own high / medium / arch signal lists.
+// arch may be nil for classes where architecture is not a discriminator.
+//
+// Tiering rule (same across all classes):
+//   - any high-confidence match -> high
+//   - medium match + any arch hint -> promoted to high
+//   - medium match alone -> medium
+//   - arch hint alone -> low (if class has any arch signal list)
+func classifyRepos(repos []string, highSignals, mediumSignals, archSignals []string) (matched []string, confidence string) {
 	seen := map[string]bool{}
 	var highHits, medHits, archHits []string
 	for _, name := range repos {
 		lower := strings.ToLower(name)
 		hit := false
-		for _, sig := range jetsonHighConfidenceSignals {
+		for _, sig := range highSignals {
 			if strings.Contains(lower, sig) && !seen[name] {
 				highHits = append(highHits, name)
 				seen[name] = true
@@ -1175,7 +1254,7 @@ func classifyJetsonRepos(repos []string) (matched []string, confidence string) {
 		if hit {
 			continue
 		}
-		for _, sig := range jetsonMediumConfidenceSignals {
+		for _, sig := range mediumSignals {
 			if strings.Contains(lower, sig) && !seen[name] {
 				medHits = append(medHits, name)
 				seen[name] = true
@@ -1186,7 +1265,7 @@ func classifyJetsonRepos(repos []string) (matched []string, confidence string) {
 		if hit {
 			continue
 		}
-		for _, sig := range jetsonArchHints {
+		for _, sig := range archSignals {
 			if strings.Contains(lower, sig) && !seen[name] {
 				archHits = append(archHits, name)
 				seen[name] = true
@@ -1208,6 +1287,13 @@ func classifyJetsonRepos(repos []string) (matched []string, confidence string) {
 		confidence = ""
 	}
 	return matched, confidence
+}
+
+// classifyJetsonRepos inspects a /v2/_catalog repository list and returns the
+// matching repos plus a confidence tier. Designed to be pure (no I/O) so it
+// can be unit-tested directly against fixture inputs.
+func classifyJetsonRepos(repos []string) (matched []string, confidence string) {
+	return classifyRepos(repos, jetsonHighConfidenceSignals, jetsonMediumConfidenceSignals, jetsonArchHints)
 }
 
 func enumDockerRegistry(c *http.Client, svc ServiceMatch) EnumResult {
@@ -1269,10 +1355,28 @@ func enumDockerRegistry(c *http.Client, svc ServiceMatch) EnumResult {
 					repoNames = append(repoNames, name)
 				}
 			}
-			if jetsonRepos, conf := classifyJetsonRepos(repoNames); conf != "" {
-				r.RawData["jetson_confidence"] = conf
-				r.RawData["jetson_repos"] = jetsonRepos
-				r.Details = append(r.Details, fmt.Sprintf("Jetson attribution (%s): %s", conf, strings.Join(jetsonRepos, ", ")))
+			// Operator-class attribution via catalog content. Each classifier
+			// is a pure function over the repo name list. Multiple classifiers
+			// can fire on the same registry (an operator with a mixed stack).
+			operatorClasses := []struct {
+				name      string
+				classify  func([]string) ([]string, string)
+				rawConf   string
+				rawRepos  string
+				titlePrefix string
+			}{
+				{"Jetson / NVIDIA edge", classifyJetsonRepos, "jetson_confidence", "jetson_repos", "Jetson / NVIDIA edge"},
+				{"Healthcare imaging (PACS / DICOM)", classifyHealthcareRepos, "healthcare_confidence", "healthcare_repos", "Healthcare imaging (PACS / DICOM)"},
+				{"Finance / algotrading", classifyFinanceRepos, "finance_confidence", "finance_repos", "Finance / algotrading"},
+			}
+			for _, oc := range operatorClasses {
+				hits, conf := oc.classify(repoNames)
+				if conf == "" {
+					continue
+				}
+				r.RawData[oc.rawConf] = conf
+				r.RawData[oc.rawRepos] = hits
+				r.Details = append(r.Details, fmt.Sprintf("%s attribution (%s): %s", oc.name, conf, strings.Join(hits, ", ")))
 				severity := "info"
 				switch conf {
 				case "high":
@@ -1284,8 +1388,8 @@ func enumDockerRegistry(c *http.Client, svc ServiceMatch) EnumResult {
 				}
 				r.Findings = append(r.Findings, Finding{
 					Category: "operator-attribution",
-					Title:    fmt.Sprintf("Jetson / NVIDIA edge operator attributed via /v2/_catalog (%s confidence)", conf),
-					Detail:   strings.Join(jetsonRepos, ", "),
+					Title:    fmt.Sprintf("%s operator attributed via /v2/_catalog (%s confidence)", oc.titlePrefix, conf),
+					Detail:   strings.Join(hits, ", "),
 					Severity: severity,
 				})
 			}

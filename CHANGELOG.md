@@ -2,6 +2,61 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.13] - 2026-05-18
+
+### Added: Healthcare imaging (PACS / DICOM) and Finance / algotrading operator attribution
+
+Extends the side-channel attribution pattern shipped in v1.9.12 to two
+additional operator classes. The shared classifier engine (`classifyRepos`)
+is now factored out; each operator class supplies its own high / medium /
+arch signal lists. Multiple classifiers can fire on the same registry when
+an operator runs a mixed stack.
+
+**Healthcare imaging signals (high-confidence single match):**
+
+- `dcm4chee` (the dcm4chee-arc DICOM archive reference platform)
+- `orthancteam/orthanc`, `osimis/orthanc`, `/orthanc` (the other dominant PACS)
+- `ohif/` (OHIF Viewer DICOM web client)
+- `weasis` (DICOM web client)
+- `/pacs`, `pacs-`, `pacs/`, `/dicom`, `dicom/`, `dicomweb`, `/wadors`, `/qido`
+
+**Finance / algotrading signals (high-confidence single match):**
+
+- `freqtrade` (dominant open-source crypto trading bot)
+- `quantlib` (dominant quant finance library)
+- `vector-bt`, `vectorbt` (vectorized backtesting library)
+- `alpaca/`, `alpaca-` (Alpaca broker API)
+- `ibapi`, `ib-gateway`, `/ibkr` (Interactive Brokers gateway / API)
+- `oanda` (OANDA fx broker)
+- `/mt4`, `/mt5`, `metatrader`
+- `nautilus_trader`, `nautilus-trader`
+
+Medium-confidence finance signals (need adjacent signal to promote):
+`backtrader`, `zipline`, `lean-engine`, `binance-`, `kraken-`, `coinbase-`.
+
+**Refactor: shared classifier engine.** `classifyRepos(repos, high, medium,
+arch []string) (matched []string, confidence string)` is the new shared
+implementation. `classifyJetsonRepos` / `classifyHealthcareRepos` /
+`classifyFinanceRepos` are one-line wrappers over it. The tiering rule is
+the same across all classes:
+- any high-confidence match -> high
+- medium match + any arch hint -> promoted to high
+- medium match alone -> medium
+- arch hint alone -> low (only when the class has arch signals)
+
+**Cross-class isolation** is exercised in tests: a mixed-stack registry
+(e.g., dcm4chee + freqtrade + dustynv in one catalog) produces independent
+high-confidence findings on all three classifiers without false cross-fire.
+
+**Tests:** 14 new fixture cases in `enumerators_healthcare_finance_test.go`
+(6 healthcare, 6 finance, 1 cross-class isolation, plus negative
+regressions confirming each classifier rejects the other classes' canonical
+signals).
+
+**Live regression check:** F4 (43.133.1.147:5000) re-verified after the
+refactor. Jetson high-confidence attribution still fires via `dustynv/ollama`;
+healthcare and finance correctly silent.
+
 ## [v1.9.12] - 2026-05-18
 
 ### Added: Jetson / NVIDIA edge operator attribution via Docker registry catalog
