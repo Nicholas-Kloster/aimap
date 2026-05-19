@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,7 +27,7 @@ func scanPorts(targets []Target, timeout time.Duration, threads int, verbose boo
 				defer pool.Release()
 				defer progress.Add(1)
 
-				addr := fmt.Sprintf("%s:%d", host, port)
+				addr := net.JoinHostPort(host, strconv.Itoa(port))
 				conn, err := net.DialTimeout("tcp", addr, timeout)
 				if err != nil {
 					if verbose {

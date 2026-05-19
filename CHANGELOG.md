@@ -2,6 +2,31 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.20] - 2026-05-19
+
+### Fixed: IPv6 address formatting in `scanPorts` and `clawdbotWSProbe`
+
+Latent bug surfaced by Go 1.25's `vet`: `fmt.Sprintf("%s:%d", host, port)` does
+not produce a valid `net.Dial` address when `host` is an unbracketed IPv6
+literal — `2001:db8::1:443` is ambiguous (host with embedded port? or host
+ending in `:1` with port `:443`?). For IPv6, the address must be
+`[host]:port`. Replaced both call sites with
+`net.JoinHostPort(host, strconv.Itoa(port))`, which handles both IPv4 and
+IPv6 correctly.
+
+`parseTargets` in `utils.go` already strips brackets from IPv6 literals and
+returns the bare address, so unbracketed IPv6 hosts can reach the dial
+helpers. Before this fix, IPv6 scanning silently failed at the dial step.
+After: IPv6 hosts work end-to-end.
+
+The bug was inherited from the v1.0 implementation; local `go vet` (1.22)
+did not flag it; the v1.9.19 CI run with Go 1.25 surfaced it and failed
+the build.
+
+No new tests (the existing test suite passes and the fix is mechanical),
+but the fix is now CI-verified on every push via the workflow added in
+v1.9.19.
+
 ## [v1.9.19] - 2026-05-19
 
 ### Fingerprint hardening: Insight #6 anchoring discipline applied to the 24

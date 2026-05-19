@@ -2389,7 +2389,7 @@ func enumClawdbot(c *http.Client, svc ServiceMatch) EnumResult {
 // clawdbotWSProbe performs a minimal WebSocket handshake and connect probe
 // to determine the Clawdbot gateway auth posture without external dependencies.
 func clawdbotWSProbe(host string, port int, useTLS bool, timeout time.Duration) (authStatus, detail string) {
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 
 	var conn net.Conn
 	var err error
