@@ -1201,17 +1201,23 @@ var healthcareImagingHighSignals = []string{
 	"orthancteam/", "osimis/orthanc", "/orthanc",
 	"ohif/", "/ohif-viewer",
 	"weasis",
-	"/pacs", "pacs-", "pacs/",
-	"/dicom", "dicom/", "dicomweb",
+	// `pacs/` and `dicom/` (without preceding slash) FP'd at population scale:
+	// `adicom/admin-mongo` contains `dicom/` as substring. Require a slash
+	// boundary before, OR a hyphen/underscore suffix. `dicomweb` (8 chars)
+	// is safe as bare.
+	"/pacs", "pacs-", "/pacs/", "pacs_",
+	"/dicom", "dicom-", "/dicom/", "dicom_", "dicomweb",
 	"/wadors", "/qido",
 	// Russian / Ukrainian: zdrav = health
 	"zdrav-", "/zdrav", "zdrav/", "krayzdrav", "minzdrav",
 	// German: klinik = clinic, krankenhaus = hospital, praxis = practice
-	"/klinik", "klinik-", "klinik/", "krankenhaus", "/praxis", "praxis-",
+	// `klinik/` and `salud/` etc. mirror the dicom/ FP class — anchor with
+	// a preceding slash OR a hyphen/underscore suffix.
+	"/klinik", "klinik-", "/klinik/", "klinik_", "krankenhaus", "/praxis", "praxis-",
 	// Spanish: salud = health, clinica = clinic
-	"/salud", "salud-", "salud/", "/clinica", "clinica-", "clinica/",
+	"/salud", "salud-", "/salud/", "salud_", "/clinica", "clinica-", "/clinica/",
 	// French: sante = health, clinique = clinic
-	"/sante", "sante-", "sante/", "/clinique", "clinique-",
+	"/sante", "sante-", "/sante/", "sante_", "/clinique", "clinique-",
 	// Italian: sanita = health, ospedale = hospital
 	"/sanita", "sanita-", "/ospedale", "ospedale-",
 	// Mandarin transliteration: yiyuan = hospital

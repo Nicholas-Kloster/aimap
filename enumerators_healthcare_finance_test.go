@@ -229,6 +229,52 @@ func TestHealthcareClassify_NoCommonWordFP(t *testing.T) {
 	}
 }
 
+// Insight #6 regression: `dicom/` and `pacs/` (without preceding slash) FP'd
+// on `adicom/admin-mongo` at population scale (198.57.27.72:5000 in the
+// 2026-05-19 registry pop survey). Both signals now require either a
+// preceding slash boundary OR a hyphen/underscore suffix.
+func TestHealthcareClassify_AdicomNoFP(t *testing.T) {
+	repos := []string{
+		"adicom/admin-mongo",
+		"adicom/api",
+		"library/postgres",
+	}
+	_, conf := classifyHealthcareRepos(repos)
+	if conf != "" {
+		t.Fatalf("`adicom/...` (substring `dicom/`) must not trigger healthcare; got %q", conf)
+	}
+}
+
+// Confirm legitimate dicom-anchored variants still fire post-tightening.
+func TestHealthcareClassify_RealDicomVariants_High(t *testing.T) {
+	for _, repo := range []string{
+		"vendor/dicom-router",   // dicom-
+		"hospital/dicom_server", // dicom_
+		"my/dicom/store",         // /dicom/
+		"company/dicomweb-proxy", // dicomweb (8 chars, bare safe)
+		"library/pacs-importer",  // pacs-
+	} {
+		_, conf := classifyHealthcareRepos([]string{repo})
+		if conf != "high" {
+			t.Fatalf("expected healthcare:high on anchored variant %q; got %q", repo, conf)
+		}
+	}
+}
+
+// Make sure the Indonesian telekonsul/virtual-klinik case still fires
+// (this was a legit healthcare attribution from the 2026-05-19 survey).
+func TestHealthcareClassify_VirtualKlinikStillFires_High(t *testing.T) {
+	repos := []string{
+		"telekonsul/virtual-klinik-bakti",
+		"telekonsul/virtual-klinik-kf",
+		"library/postgres",
+	}
+	_, conf := classifyHealthcareRepos(repos)
+	if conf != "high" {
+		t.Fatalf("legitimate Indonesian telehealth (klinik-) must still fire; got %q", conf)
+	}
+}
+
 // v1.9.15 regression: `ray` substring FP'd on `krayzdrav` in the AI-image
 // commodity classifier. The aiRegistryImages list now uses anchored variants.
 // Test indirectly by checking that aiRegistryImages does NOT contain bare

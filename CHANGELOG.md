@@ -2,6 +2,62 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.16] - 2026-05-19
+
+### Fixed: `dicom/` and `pacs/` substring FPs on `adicom/admin-mongo`
+
+Population-pass third burn-in. `198.57.27.72:5000` (final pass3 of the
+registry-population survey 2026-05-19) had `adicom/admin-mongo` in its
+catalog. The healthcare classifier's `dicom/` signal matched the substring
+`dicom/` inside `adicom/`. Classifier fired healthcare:high spuriously.
+
+Same Insight #6 class as v1.9.14 (`tegra`/`mcintegration`) and v1.9.15
+(`ray`/`krayzdrav`). The lesson: any classifier signal that ends in `/`
+without a preceding-boundary character is vulnerable to the same FP.
+
+**Fix.** Replaced `dicom/` and `pacs/` and their international cousins
+(`klinik/`, `salud/`, `clinica/`, `sante/`, `clinique/`) with the
+preceding-slash variant `/X/`, plus the `X-` and `X_` suffix variants.
+
+Before:
+  "/dicom", "dicom/", "dicomweb"
+
+After:
+  "/dicom", "dicom-", "/dicom/", "dicom_", "dicomweb"
+
+Same pattern applied to `pacs`, `klinik`, `salud`, `clinica`, `sante`.
+
+**Tests.** Added `TestHealthcareClassify_AdicomNoFP` (the literal FP),
+`TestHealthcareClassify_RealDicomVariants_High` (5 anchored variants
+still fire), `TestHealthcareClassify_VirtualKlinikStillFires_High`
+(the legitimate Indonesian telehealth case `telekonsul/virtual-klinik-bakti`
+from the same survey continues to fire).
+
+**Live re-verify.** `198.57.27.72:5000` post-rebuild: healthcare=`-`
+(correctly silent). `51.158.144.194:5000` (the legit telehealth case)
+continues to fire healthcare=high.
+
+### Pattern: the load-bearing rule across v1.9.14, v1.9.15, v1.9.16
+
+Every population-pass version since v1.9.13 has caught one or more
+single-token-substring FPs that the validation cohort missed. The class
+of bug:
+
+- **Bare 4-6 char tokens** in signal lists are vulnerable to substring
+  collision on common English / international words.
+- **Tokens ending in `/`** without a preceding-slash boundary collide
+  with any word that ends with the same letters followed by `/`.
+- The validation cohort (9 known hosts) doesn't surface these because
+  the curated hosts are class-stereotypical.
+
+The discipline that catches them: **every classifier signal added must
+contain a path/word boundary (`/`, `-`, `_`) on BOTH sides of any token
+under 8 characters**, OR be a long enough literal (8+ chars, e.g.
+`dcm4chee`, `dicomweb`, `krayzdrav`) that substring collision is
+implausible.
+
+This is Insight #6 applied at the catalog-classifier layer.
+
 ## [v1.9.15] - 2026-05-19
 
 ### Fixed: `ray` substring FP'd on `krayzdrav` (Insight #6 extended again)
