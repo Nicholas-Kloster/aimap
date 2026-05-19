@@ -2,6 +2,20 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.21] - 2026-05-19
+
+### Fixed: data race in watchdog tests (race detector under Go 1.25)
+
+`watchdog_test.go` shared a `bytes.Buffer` between the watchdog goroutine and
+the test, which `go test -race` (added to CI in v1.9.19) flags as unsafe
+concurrent access. Wrapped the buffer in a `safeBuf` (mutex-protected
+Write/String/Len) so the test reader and the goroutine writer are properly
+synchronized.
+
+The watchdog itself is unaffected — the race lives in the test harness.
+
+CI is now race-clean.
+
 ## [v1.9.20] - 2026-05-19
 
 ### Fixed: IPv6 address formatting in `scanPorts` and `clawdbotWSProbe`

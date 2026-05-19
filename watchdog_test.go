@@ -3,14 +3,42 @@ package main
 import (
 	"bytes"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
+// safeBuf wraps bytes.Buffer with a mutex so the watchdog goroutine can write
+// to it concurrently with the test reading via String/Len. Without this, the
+// race detector flags concurrent Write/Read on bytes.Buffer, which is not safe
+// for concurrent use. See CI failure on v1.9.19 commit (Go 1.25 -race).
+type safeBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *safeBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *safeBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+func (s *safeBuf) Len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Len()
+}
+
 func TestWatchdog_QuietWhenProgressing(t *testing.T) {
 	var progress atomic.Int64
-	var buf bytes.Buffer
+	var buf safeBuf
 
 	stop := startWatchdog(&progress, 50*time.Millisecond, &buf)
 
@@ -32,7 +60,7 @@ func TestWatchdog_QuietWhenProgressing(t *testing.T) {
 func TestWatchdog_WarnsAfterStall(t *testing.T) {
 	var progress atomic.Int64
 	progress.Store(5) // initial value
-	var buf bytes.Buffer
+	var buf safeBuf
 
 	// Use a very short stall window so the test is fast
 	stop := startWatchdog(&progress, 80*time.Millisecond, &buf)
@@ -53,7 +81,7 @@ func TestWatchdog_WarnsAfterStall(t *testing.T) {
 
 func TestWatchdog_ResetsOnResumedProgress(t *testing.T) {
 	var progress atomic.Int64
-	var buf bytes.Buffer
+	var buf safeBuf
 
 	stop := startWatchdog(&progress, 80*time.Millisecond, &buf)
 
