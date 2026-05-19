@@ -2,6 +2,68 @@
 
 All notable changes to aimap are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [v1.9.18] - 2026-05-19
+
+### Documentation refresh + version-string consolidation
+
+The doc-and-release drift catch-up. Public-facing artifacts had fallen behind
+the code by months; this release brings them current and removes the failure
+mode that produced the gap.
+
+**Version-string consolidation.** Single source of truth in `version.go` as
+`const Version = "1.9.18"`. The banner in `reporter.go`, the JSON
+`ToolVersion` field, the HTTP User-Agent, and the new `-version` flag all
+read from there. No more three-place drift on every release (banner was
+frozen at `v1.8`, ToolVersion at `1.9.16`, User-Agent at `1.0`).
+
+**Added: `-version` flag.** `aimap -version` prints `aimap 1.9.18` and exits.
+Operators can now determine the version without launching a scan.
+
+**README refresh.** Service count corrected from 66 to 120 (50 dedicated deep
+enumerators). The 11-row category table expanded to 24 rows covering every
+fingerprint that ships, including the categories added across v1.4–v1.9:
+image generation, embedding servers, code assistants, agent memory, data
+labeling, MCP, observability/tracing, analytical datastores, medical AI/PACS,
+and the cross-cutting credential scanner. About section reframed to honor
+both audiences — defenders running it against their own networks and
+researchers running it against authorized populations — and to credit the
+population-FP discipline that every shipped fingerprint passes.
+
+**Man page refresh.** `aimap.1` had been frozen at "aimap 1.3, April 2026,
+36 services." Updated to 1.9.18, May 2026, 120 services across 24
+categories. New flags (`-scan-all-fingerprints`, `-exclude-compromised`,
+`-version`) documented. ML-adjacency rule and cross-cutting credential
+scanner described in the pipeline section. Default port list updated to the
+canonical 42-port set including 9200 (Elasticsearch).
+
+**PKGBUILD bump.** `pkgver=1.9.18`. Description updated from "36 AI/ML
+service types" to "120 fingerprints + 50 deep enumerators across LLM
+runtimes, vector databases, model servers, agent platforms, observability
+stacks, AI safety/guardrails, medical AI, and voice/audio AI." `sha256sums`
+set to `SKIP` pending tarball generation; will be updated after the tag is
+pushed.
+
+**In-repo `CLAUDE.md` refresh.** Service count corrected from
+"70 fingerprints + 37 enumerators" to "120 fingerprints + 50 enumerators."
+Layout block now references `adjacency.go` (the Insight #20 rule) and the
+`scanCredentials` / `scanSecrets` pair in `enumerators.go`.
+
+**Default port list documentation drift.** README listed 41 ports without
+9200; the binary's `main.go` has shipped 42 ports including 9200 since
+v1.9.x. Documentation aligned to code.
+
+### Source
+
+The doc gap was the most-referenced item in the v1.9.17 internal review.
+Operators reading the JSON `ToolVersion` field could not trust it; the
+README undersold the tool's actual coverage by 54 services; the man page
+was a release behind every release since v1.3.0. The fix is mechanical but
+load-bearing: the public surface now matches the code, and the version
+string is consolidated so future releases need to update exactly one line.
+
+No behavior changes. No new fingerprints. No new enumerators. All existing
+tests pass.
+
 ## [v1.9.17] - 2026-05-19
 
 ### Added: Exposed API Credentials fingerprint + scanCredentials (Insight #38)

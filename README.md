@@ -7,7 +7,7 @@
 [![Release](https://img.shields.io/github/v/release/Nicholas-Kloster/aimap)](https://github.com/Nicholas-Kloster/aimap/releases)
 [![Stars](https://img.shields.io/github/stars/Nicholas-Kloster/aimap)](https://github.com/Nicholas-Kloster/aimap/stargazers)
 
-**nmap for AI infrastructure.** A purpose-built scanner for LLMs, vector databases, and ML model servers. Defenders run it against their own networks to find exposed AI services before attackers do.
+**nmap for AI infrastructure.** Purpose-built scanner for LLMs, vector databases, ML model servers, agent platforms, observability stacks, and 100+ other AI/ML services. Defenders run it against their own networks to find shadow AI before attackers do. NuClide research runs it against authorized populations to map exposure at scale.
 
 Single Go binary. Zero external dependencies. Read-only HTTP probes. Safe for production.
 
@@ -23,23 +23,38 @@ Security teams can't secure what they can't see, and AI adoption moves faster th
 
 Generic scanners (`nmap`, `nuclei`) don't identify these as AI services, so they don't show up in the security team's inventory. aimap does.
 
-## What it detects (66 services)
+The 120 fingerprints in this release were forged from population-scale exposure surveys: 16,000+ unauthenticated Ollama deployments, 13,000+ Docker registries, 10,000+ NVIDIA Jetson edge devices, hundreds of extortion-wiped Elasticsearch clusters. Every fingerprint that ships passes the population-FP discipline: multi-condition matches anchored to status code + JSON shape + body, with a named regression test for every false-positive class the survey burned. Case studies are published at [nuclide-research.com](https://nuclide-research.com).
+
+## What it detects (120 services, 50 deep enumerators)
 
 | Category | Services |
 |---|---|
-| Vector databases | Weaviate, ChromaDB, Qdrant, Milvus |
-| LLM runtimes | Ollama, vLLM, SGLang, LocalAI, AI TTS Server, text-generation-webui |
-| ML platforms | MLflow, TensorFlow Serving, Triton Inference Server, Ray Serve, Ray Dashboard, Kubeflow |
-| Orchestration / UI | LangServe, Flowise, Dify, Open WebUI, SillyTavern, LiteLLM, BentoML |
-| AI agent platforms | OpenHands, Mem0, Coolify, Clawdbot |
+| Vector databases & search | Weaviate, ChromaDB, Qdrant, Milvus, Apache Solr, Meilisearch, Typesense, Vespa |
+| LLM runtimes | Ollama, llama.cpp server, vLLM, SGLang, LocalAI, text-generation-webui |
+| Image generation | ComfyUI, AUTOMATIC1111 / SD WebUI, InvokeAI, Fooocus, SwarmUI |
+| Embedding servers | HuggingFace TEI, infinity-embedding, Embedding API |
+| Model serving | TensorFlow Serving, Triton Inference Server, NVIDIA NIM |
+| ML platforms / experiment tracking | MLflow, Weights & Biases, WandB Service, ClearML, Aim |
+| Orchestration / UI | LangServe, Flowise, Dify, Open WebUI, SillyTavern, LiteLLM, One API, NewAPI, BentoML |
+| AI agent platforms | OpenHands, AutoGen Studio, Anti-detect CDP server, Mem0, Coolify, Clawdbot |
+| MCP | MCP Server |
+| Code assistants | Sourcegraph, Sourcebot, Sweep AI, Tabnine Context Engine, Dyad, bolt.diy, Refact |
+| Agent memory / data | Mem0, Argilla, Zep, Letta |
+| Data labeling | Label Studio, CVAT, Doccano, Prodigy |
+| Compute orchestration | Ray Serve, Ray Dashboard, Kubeflow, Apache Spark UI, Apache Airflow, Dask Dashboard, Prefect, Temporal Web |
+| Container / Kubernetes / infra | etcd, Vault, Docker daemon, Kubernetes API, Consul, Portainer, Kubelet |
 | BI / Dashboard | Metabase, Apache Superset, Redash, Grafana |
-| Observability / infra | Langfuse, Prometheus, etcd, MinIO, n8n |
-| AI safety / eval | Promptfoo, NeMo Guardrails, DeepEval, LangSmith, Inspect AI, Garak REST, Lakera Guard |
-| Compute orchestration | Ray, Kubeflow, Spark, Airflow, BentoML, ClickHouse, Apache Pinot, ScyllaDB |
-| Voice / Audio AI | Whisper ASR, Coqui XTTS, Piper TTS, RVC Voice Cloning, OpenVoice, ChatTTS, F5-TTS, Pipecat, Vocode, LiveKit Agents |
+| Observability / tracing | Langfuse, Arize Phoenix, Helicone Self-Hosted, Lunary, OpenLIT, Pezzo, Prometheus |
+| Workflow automation | n8n |
+| Object storage | MinIO |
+| Analytical datastores | ClickHouse, Elasticsearch, Apache Pinot, ScyllaDB REST, Amulet Scan DuckDB, Definite.app DuckDB |
+| AI safety / eval / guardrails | Promptfoo, NeMo Guardrails, DeepEval, LangSmith Self-Hosted, Inspect AI, Garak REST, Lakera Guard Self-Hosted |
+| Voice / Audio AI | Whisper ASR, Coqui XTTS, Piper TTS, RVC Voice Cloning, OpenVoice, ChatTTS, F5-TTS, Pipecat, Vocode, LiveKit Agents, AI TTS Server |
+| Medical AI / PACS | MONAI Label Server, Orthanc DICOM Server, dcm4che / dcm4chee-arc, DICOMweb (QIDO-RS) |
 | Notebooks / dev / adjacent | Jupyter Notebook, Open Directory, Docker Registry |
+| Cross-cutting | Exposed API Credentials (Langfuse, Helicone, Stripe, Anthropic, LangSmith, OpenRouter, Slack — surfaces vendor keys in HTTP responses independent of the host's primary service) |
 
-Each service has a dedicated fingerprint. 33 of the 66 services also have dedicated deep enumerators that surface PII fields, unauthenticated RCE, exposed credentials, claimable admin states, and other actionable findings.
+Each service has a dedicated fingerprint. 50 of the 120 services also have dedicated deep enumerators that surface PII fields, unauthenticated RCE, exposed credentials, claimable admin states, and other actionable findings.
 
 ## Companion tool: `aimap-profile`
 
@@ -119,7 +134,7 @@ jq '.enum_results[] | select(.risk_level == "critical")' check.json
 | `-o` | — | JSON report output file |
 | `-v` | false | Verbose output |
 
-Default port list: `80,443,1984,2379,3000,3001,4000,4040,4200,5000,5001,5678,6333,7575,7576,7860,8000,8001,8080,8081,8088,8123,8233,8265,8443,8501,8787,8888,8889,9000,9090,9091,10000,11434,15500,18080,18789,19530,30000,51000,55000`
+Default port list (42 ports): `80,443,1984,2379,3000,3001,4000,4040,4200,5000,5001,5678,6333,7575,7576,7860,8000,8001,8080,8081,8088,8123,8233,8265,8443,8501,8787,8888,8889,9000,9090,9091,9200,10000,11434,15500,18080,18789,19530,30000,51000,55000`
 
 See `man aimap` (if installed system-wide) for the full reference.
 
@@ -143,16 +158,17 @@ Terminal output is colorized, human-readable, and includes per-service risk scor
 
 | File | Purpose |
 |------|---------|
-| `main.go` | CLI entry point, 3-phase orchestration |
-| `scanner.go` | Parallel TCP connect + HTTP probe |
-| `fingerprints.go` | Fingerprint database + match engine |
-| `enumerators.go` | Service-specific deep enumeration |
+| `main.go` | CLI entry point, 3-phase orchestration, flag parsing |
+| `scanner.go` | Parallel TCP connect + HTTP probe (Phase 1) |
+| `fingerprints.go` | 120-entry fingerprint database + match engine (Phase 2) |
+| `enumerators.go` | 50 service-specific deep enumerators + credential/secret scanners (Phase 3) |
+| `adjacency.go` | ML-adjacency rule — data-tier ports on hosts with confirmed AI services (Insight #20) |
 | `reporter.go` | Colored terminal output + JSON export |
-| `utils.go` | HTTP client, JSON helpers, CIDR parsing, worker pool |
+| `utils.go` | HTTP client, JSON helpers, CIDR parsing, worker pool, target normalization |
 
 Adding a new service is two steps:
 
-1. Add a `Fingerprint` struct to `fingerprints.go`
+1. Add a `Fingerprint` struct to `fingerprints.go` — multi-condition `Matches[]` only; naked single-word `body_contains` is unsound at population scale
 2. (Optional) Add an `enum<Service>` function to `enumerators.go` and wire it in `runEnumerators`
 
 PRs welcome.
@@ -235,13 +251,17 @@ MIT. See [LICENSE](LICENSE).
 
 ## About
 
-Maintained by **[Nicholas Michael Kloster](https://github.com/Nicholas-Kloster)** as part of [**NuClide**](https://nuclide-research.com) — independent AI infrastructure security research.
+aimap is the fingerprint engine NuClide research surveys run on. The tool is open source under MIT. The methodology is published. The case studies are public.
+
+Defenders run aimap against their own networks. Researchers run it against authorized populations. The 120 fingerprints come from real survey work: hundreds of thousands of probes across exposed Ollama deployments, Weaviate vector databases, MLflow trackers, Langfuse instances, Docker registries, NVIDIA Jetson edge devices, Frigate camera fleets, Elasticsearch clusters, code-assistant servers, and the long tail of AI services that ship `--host 0.0.0.0` by default.
+
+Every fingerprint passes a population-FP discipline before it ships: multi-condition `Matches[]` anchored to status code + JSON shape + body, with a named regression test for every false-positive class the survey burned. The discipline is enforced because at population scale, a 0.1% FP rate against 10,000 hosts means 10 wrong findings, and the noise breaks the survey.
+
+Maintained by **[Nicholas Michael Kloster](https://github.com/Nicholas-Kloster)** as part of [**NuClide**](https://nuclide-research.com).
 
 CISA disclosures: [CVE-2025-4364](https://nvd.nist.gov/vuln/detail/CVE-2025-4364) · [ICSA-25-140-11](https://www.cisa.gov/news-events/ics-advisories/icsa-25-140-11)
 
-## Acknowledgments
-
-Built on methodology from investigations into exposed AI infrastructure during 2025-2026 — including engagements where vector databases, LLM inference servers, and MLflow instances were found unauthenticated on public IPs. aimap is the tool that would have caught them earlier if defenders had been running it.
+Companion tools: [aimap-profile](./aimap-profile/), [BARE](https://github.com/Nicholas-Kloster/BARE), [recongraph](https://github.com/Nicholas-Kloster/recongraph), [cortex](https://github.com/Nicholas-Kloster/cortex-framework)
 
 ## See also
 

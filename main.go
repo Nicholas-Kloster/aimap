@@ -27,7 +27,13 @@ func main() {
 	excludeCompromised := flag.Bool("exclude-compromised", false,
 		"Drop hosts marked compromised-by-extortion (e.g. Meow-class wiped Elasticsearch with read_me index) from the JSON report. "+
 			"Use for disclosure-pipeline input — you don't want to send 'your host is exposed' to a host that's already been wiped.")
+	showVersion := flag.Bool("version", false, "Print aimap version and exit.")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("aimap %s\n", Version)
+		os.Exit(0)
+	}
 
 	scanAllFingerprints = *scanAll
 

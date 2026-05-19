@@ -72,7 +72,7 @@ var asciiBanner = `
 
 func printBanner() {
 	fmt.Println(cyan(asciiBanner))
-	fmt.Println(dim("  AI Infrastructure Mapper v1.8"))
+	fmt.Println(dim("  AI Infrastructure Mapper v" + Version))
 	fmt.Println(dim("  by NuClide"))
 }
 
@@ -273,7 +273,7 @@ func buildReport(hosts []string, portsPerHost int, openPorts []PortResult,
 
 	rpt := ScanReport{
 		Tool:         "aimap",
-		ToolVersion:  "1.9.16",
+		ToolVersion:  Version,
 		Target:       strings.Join(hosts, ", "),
 		Timestamp:    time.Now().UTC().Format(time.RFC3339),
 		PortsScanned: len(hosts) * portsPerHost,
